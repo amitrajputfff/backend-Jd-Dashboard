@@ -1,0 +1,52 @@
+"""FastAPI backend for the No-Code Platform agents dashboard.
+
+Run:
+    cd /No-Code-Platform/backend
+    pip install -r requirements.txt
+    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+"""
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+try:
+    from .database import engine, Base
+    from .routers import assistants
+except ImportError:
+    from database import engine, Base
+    from routers import assistants
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Create tables on startup
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+
+
+app = FastAPI(
+    title="No-Code Platform API",
+    description="Backend for the JD-Dashboard agents management",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount routes — prefix /backend so paths match what the frontend hardcodes:
+#   GET http://localhost:8000/backend/api/assistants
+app.include_router(assistants.router, prefix="/backend")
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
