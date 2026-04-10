@@ -96,6 +96,18 @@ Is the total response under 20 words?
 Did I acknowledge the user first?
 If it is a radio question: did I list ALL options?
 Am I following all HARD RULES?
+
+PRODUCT CHANGE HANDLING
+
+If the buyer mentions wanting a DIFFERENT product than originally discussed (e.g., "actually I need CCTV", "I want a refrigerator instead"), call the FetchCategorySchema function with srchterm set to the new product category in English (e.g., "cctv", "refrigerator", "washing-machine").
+
+You will receive the new qualification questions. Acknowledge the change briefly in one sentence, then continue asking from Question 1 of the new schema.
+
+Example:
+Buyer: "Actually I need CCTV cameras for my shop"
+You: [call FetchCategorySchema(srchterm="cctv")]
+[Function returns new questions for CCTV]
+You: "जी, CCTV के लिए बात करते हैं। आपको कौन सा CCTV system चाहिए — analog, IP, wireless या hybrid?"
 """
     print("[Seed] system_prompt.txt not found — using embedded fallback prompt")
 
@@ -159,6 +171,18 @@ Budget question:
 Call end:
 - सभी questions complete होने पर: "शुक्रिया जी, time देने के लिए। जल्द ही sellers आपसे contact करेंगे। अच्छा दिन हो आपका।"
 - "नहीं चाहिए" या rude reply → politely exit करें।
+
+PRODUCT CHANGE HANDLING
+
+If the buyer mentions wanting a DIFFERENT product than originally discussed (e.g., "actually I need CCTV", "I want a refrigerator instead"), call the FetchCategorySchema function with srchterm set to the new product category in English (e.g., "cctv", "refrigerator", "washing-machine").
+
+You will receive the new qualification questions. Acknowledge the change briefly in one sentence, then continue asking from Question 1 of the new schema.
+
+Example:
+Buyer: "Actually I need CCTV cameras for my shop"
+You: [call FetchCategorySchema(srchterm="cctv")]
+[Function returns new questions for CCTV]
+You: "जी, CCTV के लिए बात करते हैं। आपको कौन सा CCTV system चाहिए — analog, IP, wireless या hybrid?"
 """
 
 
@@ -213,18 +237,61 @@ async def seed():
             "schema": {},
         }
 
+        # ── Category schema fetch — called by LLM when buyer changes product ─
+        CATEGORY_SCHEMA_FUNCTION = {
+            "id": "category_schema_fetch",
+            "name": "FetchCategorySchema",
+            "description": (
+                "Call this when the buyer changes their product requirement mid-call "
+                "(e.g., 'actually I need a refrigerator', 'I want CCTV instead'). "
+                "Fetches the new qualification schema for the new product category. "
+                "Pass the new product as a simple English search term."
+            ),
+            "url": "http://192.168.20.105:1080/services/abd/abd_beta.php",
+            "method": "GET",
+            "headers": {},
+            "query_params": {
+                "v": "1",
+                "chatbot": "1",
+                "pos_change": "1",
+                "srchterm": "",
+            },
+            "body_format": "json",
+            "custom_body": "",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "srchterm": {
+                        "type": "string",
+                        "description": (
+                            "New product search term in English, e.g. 'washing-machine', "
+                            "'cctv', 'refrigerator', 'air-conditioner'"
+                        ),
+                    }
+                },
+                "required": ["srchterm"],
+            },
+        }
+
         if sip_existing:
             print(f"[Seed] SIP bot already exists: assistant_id={sip_existing.assistant_id}")
             changed = False
-            if not sip_existing.functions:
-                sip_existing.functions = [MIS_LEAD_FUNCTION]
+            existing_fn_names = {f.get("name") for f in (sip_existing.functions or [])}
+            fns = list(sip_existing.functions or [])
+            if "FetchLead" not in existing_fn_names:
+                fns.append(MIS_LEAD_FUNCTION)
                 changed = True
+            if "FetchCategorySchema" not in existing_fn_names:
+                fns.append(CATEGORY_SCHEMA_FUNCTION)
+                changed = True
+            if changed:
+                sip_existing.functions = fns
             if not sip_existing.function_calling:
                 sip_existing.function_calling = True
                 changed = True
             if changed:
                 await db.commit()
-                print(f"[Seed] SIP bot updated: function_calling=True, MIS lead function added")
+                print(f"[Seed] SIP bot updated: functions={[f['name'] for f in fns]}")
         else:
             sip_bot = Assistant(
                 assistant_id=str(uuid.uuid4()),
@@ -284,7 +351,7 @@ async def seed():
 
                 # ── Function calling ─────────────────────────────────────────
                 function_calling=True,
-                functions=[MIS_LEAD_FUNCTION],
+                functions=[MIS_LEAD_FUNCTION, CATEGORY_SCHEMA_FUNCTION],
 
                 # ── VAD / behaviour — mirrors bot_livekit_sip.py hardcoded values ──
                 language="hindi",
@@ -324,15 +391,22 @@ async def seed():
         if webrtc_existing:
             print(f"[Seed] WebRTC bot already exists: assistant_id={webrtc_existing.assistant_id}")
             changed = False
-            if not webrtc_existing.functions:
-                webrtc_existing.functions = [MIS_LEAD_FUNCTION]
+            existing_fn_names = {f.get("name") for f in (webrtc_existing.functions or [])}
+            fns = list(webrtc_existing.functions or [])
+            if "FetchLead" not in existing_fn_names:
+                fns.append(MIS_LEAD_FUNCTION)
                 changed = True
+            if "FetchCategorySchema" not in existing_fn_names:
+                fns.append(CATEGORY_SCHEMA_FUNCTION)
+                changed = True
+            if changed:
+                webrtc_existing.functions = fns
             if not webrtc_existing.function_calling:
                 webrtc_existing.function_calling = True
                 changed = True
             if changed:
                 await db.commit()
-                print(f"[Seed] WebRTC bot updated: function_calling=True, MIS lead function added")
+                print(f"[Seed] WebRTC bot updated: functions={[f['name'] for f in fns]}")
         else:
             webrtc_bot = Assistant(
                 assistant_id=str(uuid.uuid4()),
@@ -381,8 +455,8 @@ async def seed():
                 timeout_message="",   # WebRTC calls have no time limit by default
 
                 # ── Function calling ─────────────────────────────────────────
-                function_calling=False,
-                functions=[MIS_LEAD_FUNCTION],
+                function_calling=True,
+                functions=[MIS_LEAD_FUNCTION, CATEGORY_SCHEMA_FUNCTION],
 
                 # ── VAD / behaviour — mirrors bot.py fallback values ──────────
                 language="hindi",
