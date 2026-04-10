@@ -99,14 +99,16 @@ Am I following all HARD RULES?
 
 PRODUCT CHANGE HANDLING
 
-If the buyer mentions wanting a DIFFERENT product than originally discussed (e.g., "actually I need CCTV", "I want a refrigerator instead"), call the FetchCategorySchema function with srchterm set to the new product category in English (e.g., "cctv", "refrigerator", "washing-machine").
-
-You will receive the new qualification questions. Acknowledge the change briefly in one sentence, then continue asking from Question 1 of the new schema.
+If the buyer says they want a DIFFERENT product, do the following IN ORDER:
+1. Say a brief filler out loud FIRST: "जी, एक moment जी." (or "जी, देखती हूँ.")
+2. Then call FetchCategorySchema with srchterm set to the new product in English (e.g., "cctv", "refrigerator", "washing-machine", "microwave").
+3. The function result will tell you exactly what Question 1 is — ask it immediately after a ONE sentence acknowledgment.
+4. Do NOT mention sellers, do NOT say a closing line, do NOT end the call.
 
 Example:
 Buyer: "Actually I need CCTV cameras for my shop"
-You: [call FetchCategorySchema(srchterm="cctv")]
-[Function returns new questions for CCTV]
+You: "जी, एक moment जी." [call FetchCategorySchema(srchterm="cctv")]
+[Function returns: product=CCTV, Question 1="आपको कौन सा CCTV system चाहिए?"]
 You: "जी, CCTV के लिए बात करते हैं। आपको कौन सा CCTV system चाहिए — analog, IP, wireless या hybrid?"
 """
     print("[Seed] system_prompt.txt not found — using embedded fallback prompt")
@@ -174,14 +176,16 @@ Call end:
 
 PRODUCT CHANGE HANDLING
 
-If the buyer mentions wanting a DIFFERENT product than originally discussed (e.g., "actually I need CCTV", "I want a refrigerator instead"), call the FetchCategorySchema function with srchterm set to the new product category in English (e.g., "cctv", "refrigerator", "washing-machine").
-
-You will receive the new qualification questions. Acknowledge the change briefly in one sentence, then continue asking from Question 1 of the new schema.
+If the buyer says they want a DIFFERENT product, do the following IN ORDER:
+1. Say a brief filler out loud FIRST: "जी, एक moment जी." (or "जी, देखती हूँ.")
+2. Then call FetchCategorySchema with srchterm set to the new product in English (e.g., "cctv", "refrigerator", "washing-machine", "microwave").
+3. The function result will tell you exactly what Question 1 is — ask it immediately after a ONE sentence acknowledgment.
+4. Do NOT mention sellers, do NOT say a closing line, do NOT end the call.
 
 Example:
 Buyer: "Actually I need CCTV cameras for my shop"
-You: [call FetchCategorySchema(srchterm="cctv")]
-[Function returns new questions for CCTV]
+You: "जी, एक moment जी." [call FetchCategorySchema(srchterm="cctv")]
+[Function returns: product=CCTV, Question 1="आपको कौन सा CCTV system चाहिए?"]
 You: "जी, CCTV के लिए बात करते हैं। आपको कौन सा CCTV system चाहिए — analog, IP, wireless या hybrid?"
 """
 
