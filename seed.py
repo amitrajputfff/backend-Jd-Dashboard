@@ -289,6 +289,10 @@ async def seed():
             if not sip_existing.function_calling:
                 sip_existing.function_calling = True
                 changed = True
+            if "PRODUCT CHANGE HANDLING" not in (sip_existing.prompt or ""):
+                sip_existing.prompt = SYSTEM_PROMPT
+                changed = True
+                print("[Seed] SIP bot prompt updated with PRODUCT CHANGE HANDLING")
             if changed:
                 await db.commit()
                 print(f"[Seed] SIP bot updated: functions={[f['name'] for f in fns]}")
@@ -404,6 +408,10 @@ async def seed():
             if not webrtc_existing.function_calling:
                 webrtc_existing.function_calling = True
                 changed = True
+            if "PRODUCT CHANGE HANDLING" not in (webrtc_existing.prompt or ""):
+                webrtc_existing.prompt = WEBRTC_SYSTEM_PROMPT
+                changed = True
+                print("[Seed] WebRTC bot prompt updated with PRODUCT CHANGE HANDLING")
             if changed:
                 await db.commit()
                 print(f"[Seed] WebRTC bot updated: functions={[f['name'] for f in fns]}")
