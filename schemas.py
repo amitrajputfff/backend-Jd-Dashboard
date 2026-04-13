@@ -185,6 +185,7 @@ class AssistantsListResponse(BaseModel):
 
 class BotConfig(BaseModel):
     assistant_id: str
+    organization_id: str
     system_prompt: str
     initial_message: str
     call_end_text: str

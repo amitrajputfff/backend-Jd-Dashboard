@@ -13,10 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 try:
     from .database import engine, Base
-    from .routers import assistants
+    from .routers import assistants, call_logs
 except ImportError:
     from database import engine, Base
-    from routers import assistants
+    from routers import assistants, call_logs
 
 
 @asynccontextmanager
@@ -45,6 +45,7 @@ app.add_middleware(
 # Mount routes — prefix /backend so paths match what the frontend hardcodes:
 #   GET http://localhost:8000/backend/api/assistants
 app.include_router(assistants.router, prefix="/backend")
+app.include_router(call_logs.router, prefix="/backend")
 
 
 @app.get("/health")

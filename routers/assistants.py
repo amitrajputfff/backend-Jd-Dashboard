@@ -344,6 +344,7 @@ async def get_bot_config(
     row = await _get_or_404(db, assistant_id)
     return BotConfig(
         assistant_id=row.assistant_id,
+        organization_id=row.organization_id or "",
         system_prompt=row.prompt or "",
         initial_message=row.initial_message or "",
         call_end_text=row.call_end_text or "",
