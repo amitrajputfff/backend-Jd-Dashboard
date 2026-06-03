@@ -8,12 +8,13 @@ Endpoints:
 
 from __future__ import annotations
 
+import json as _json
 import os
 import re
+import urllib.request
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-import aiohttp
 from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -226,13 +227,22 @@ Return only valid JSON, no markdown."""
         "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            if resp.status != 200:
-                raise HTTPException(status_code=502, detail=f"Gemini error {resp.status}")
-            raw = await resp.json()
+    import asyncio
+    def _call_gemini():
+        req = urllib.request.Request(
+            url,
+            data=_json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return _json.loads(r.read().decode())
 
-    import json as _json
+    try:
+        raw = await asyncio.get_event_loop().run_in_executor(None, _call_gemini)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gemini request failed: {e}")
+
     try:
         text_out = raw["candidates"][0]["content"]["parts"][0]["text"]
         result = _json.loads(text_out)

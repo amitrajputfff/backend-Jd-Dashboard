@@ -10,5 +10,4 @@ dependencies = [
     "pydantic>=2.0.0",
     "motor>=3.3,<4",
     "pymongo>=4.1,<4.7",
-    "aiohttp>=3.9,<4",
 ]

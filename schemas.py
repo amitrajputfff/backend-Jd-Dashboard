@@ -246,6 +246,34 @@ class AssistantResponse(BaseModel):
     # Language notes
     lang_notes: str
 
+    # Legacy / frontend-compatibility fields (not stored in DB, provided as defaults)
+    language_id: int = 11
+    stt_model_id: int = 1
+    tts_model_id: int = 1
+    llm_model_id: int = 1
+    voice_id: int = 1
+    speech_speed: float = 1.0
+    pitch: str = "0%"
+    interruption_level: str = "Low"
+    cutoff_seconds: int = 5
+    ideal_time_seconds: int = 30
+    call_recording: bool = False
+    barge_in: bool = True
+    voice_activity_detection: bool = True
+    noise_suppression: bool = True
+    silence_timeout: int = 15
+    is_transferable: bool = False
+    transfer_number: Optional[str] = None
+    max_token: int = 250
+    memory_enabled: bool = False
+    max_memory_retrieval: int = 5
+    logo_file_url: Optional[str] = None
+    logo_file_type: Optional[str] = None
+    logo_file_size: Optional[int] = None
+    training_status: str = "trained"
+    avg_duration: str = "0:00"
+    last_active: str = ""
+
     model_config = {"from_attributes": True}
 
 
