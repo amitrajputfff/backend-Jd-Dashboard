@@ -79,5 +79,23 @@ class Assistant(Base):
     filler_message = Column(JSON, default=list)
     function_filler_message = Column(JSON, default=list)
 
+    # Sarvam STT / VAD tuning
+    sarvam_min_rms = Column(Integer, default=600)
+    sarvam_min_speech_ms = Column(Integer, default=500)
+    sarvam_min_speech_ms_singleword = Column(Integer, default=800)
+    sarvam_silero_threshold = Column(Float, default=0.5)
+    sarvam_silero_min_speech_ms = Column(Integer, default=120)
+    gemini_silero_fallback_speech_ms = Column(Integer, default=150)
+    post_speech_hold_ms = Column(Integer, default=300)
+
+    # Inactivity / silence-handling timers (seconds)
+    inactivity_first_rescue_secs = Column(Float, default=4.0)
+    inactivity_first_nudge_gap_secs = Column(Float, default=4.0)
+    inactivity_nudge_secs = Column(Float, default=10.0)
+    inactivity_close_secs = Column(Float, default=5.0)
+
+    # Analysis prompt — used by callback_worker to analyse call transcripts
+    analysis_prompt = Column(Text, default="")
+
     # Lightweight metrics (incremented by the bot on callback)
     calls_today = Column(Integer, default=0)

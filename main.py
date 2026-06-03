@@ -2,8 +2,7 @@
 
 Run:
     cd /No-Code-Platform/backend
-    pip install -r requirements.txt
-    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 """
 
 from contextlib import asynccontextmanager
@@ -12,18 +11,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 try:
-    from .database import engine, Base
     from .routers import assistants, call_logs
+    from .mongo import get_assistants_col
 except ImportError:
-    from database import engine, Base
     from routers import assistants, call_logs
+    from mongo import get_assistants_col
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables on startup
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Ensure indexes exist on startup
+    col = get_assistants_col()
+    await col.create_index("assistant_id", unique=True)
+    await col.create_index("organization_id")
+    await col.create_index([("organization_id", 1), ("is_deleted", 1)])
     yield
 
 

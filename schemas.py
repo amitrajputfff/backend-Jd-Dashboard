@@ -69,6 +69,31 @@ class CreateAssistantRequest(BaseModel):
     filler_message: Optional[List[str]] = Field(default_factory=list)
     function_filler_message: Optional[List[str]] = Field(default_factory=list)
 
+    # Sarvam STT / VAD tuning
+    sarvam_min_rms: Optional[int] = 600
+    sarvam_min_speech_ms: Optional[int] = 500
+    sarvam_min_speech_ms_singleword: Optional[int] = 800
+    sarvam_silero_threshold: Optional[float] = 0.5
+    sarvam_silero_min_speech_ms: Optional[int] = 120
+    gemini_silero_fallback_speech_ms: Optional[int] = 150
+    post_speech_hold_ms: Optional[int] = 300
+
+    # Inactivity timers
+    inactivity_first_rescue_secs: Optional[float] = 4.0
+    inactivity_first_nudge_gap_secs: Optional[float] = 4.0
+    inactivity_nudge_secs: Optional[float] = 10.0
+    inactivity_close_secs: Optional[float] = 5.0
+
+    # Analysis prompt
+    analysis_prompt: Optional[str] = ""
+
+    # Inactivity phrases
+    inactivity_phrase: Optional[str] = "क्या आप अभी line पर हैं?"
+    inactivity_end_phrase: Optional[str] = "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद."
+
+    # Language notes (appended to system prompt — tone, style, filler rules)
+    lang_notes: Optional[str] = ""
+
     # Accepted but ignored — AI-create flow extras
     language_id: Optional[int] = None
     stt_model_id: Optional[int] = None
@@ -111,6 +136,31 @@ class UpdateAssistantRequest(BaseModel):
     max_call_duration: Optional[int] = None
     filler_message: Optional[List[str]] = None
     function_filler_message: Optional[List[str]] = None
+
+    # Sarvam STT / VAD tuning
+    sarvam_min_rms: Optional[int] = None
+    sarvam_min_speech_ms: Optional[int] = None
+    sarvam_min_speech_ms_singleword: Optional[int] = None
+    sarvam_silero_threshold: Optional[float] = None
+    sarvam_silero_min_speech_ms: Optional[int] = None
+    gemini_silero_fallback_speech_ms: Optional[int] = None
+    post_speech_hold_ms: Optional[int] = None
+
+    # Inactivity timers
+    inactivity_first_rescue_secs: Optional[float] = None
+    inactivity_first_nudge_gap_secs: Optional[float] = None
+    inactivity_nudge_secs: Optional[float] = None
+    inactivity_close_secs: Optional[float] = None
+
+    # Analysis prompt
+    analysis_prompt: Optional[str] = None
+
+    # Inactivity phrases
+    inactivity_phrase: Optional[str] = None
+    inactivity_end_phrase: Optional[str] = None
+
+    # Language notes
+    lang_notes: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +221,31 @@ class AssistantResponse(BaseModel):
     filler_message: List[str]
     function_filler_message: List[str]
 
+    # Sarvam STT / VAD tuning
+    sarvam_min_rms: int
+    sarvam_min_speech_ms: int
+    sarvam_min_speech_ms_singleword: int
+    sarvam_silero_threshold: float
+    sarvam_silero_min_speech_ms: int
+    gemini_silero_fallback_speech_ms: int
+    post_speech_hold_ms: int
+
+    # Inactivity timers
+    inactivity_first_rescue_secs: float
+    inactivity_first_nudge_gap_secs: float
+    inactivity_nudge_secs: float
+    inactivity_close_secs: float
+
+    # Analysis prompt
+    analysis_prompt: str
+
+    # Inactivity phrases
+    inactivity_phrase: str
+    inactivity_end_phrase: str
+
+    # Language notes
+    lang_notes: str
+
     model_config = {"from_attributes": True}
 
 
@@ -203,3 +278,23 @@ class BotConfig(BaseModel):
     max_call_duration: int
     filler_message: List[str]
     function_filler_message: List[str]
+    # Sarvam STT / VAD tuning
+    sarvam_min_rms: int = 600
+    sarvam_min_speech_ms: int = 500
+    sarvam_min_speech_ms_singleword: int = 800
+    sarvam_silero_threshold: float = 0.5
+    sarvam_silero_min_speech_ms: int = 120
+    gemini_silero_fallback_speech_ms: int = 150
+    post_speech_hold_ms: int = 300
+    # Inactivity timers
+    inactivity_first_rescue_secs: float = 4.0
+    inactivity_first_nudge_gap_secs: float = 4.0
+    inactivity_nudge_secs: float = 10.0
+    inactivity_close_secs: float = 5.0
+    # Analysis prompt
+    analysis_prompt: str = ""
+    # Inactivity phrases
+    inactivity_phrase: str = "क्या आप अभी line पर हैं?"
+    inactivity_end_phrase: str = "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद."
+    # Language notes
+    lang_notes: str = ""

@@ -1,498 +1,189 @@
-"""Seed script — inserts the Justdial lead-qualification bot (bot_livekit_sip.py config)
-into the local SQLite database.
+"""Seed script — upserts the Justdial lead-qualification bots into MongoDB.
 
 Usage:
     cd backend
-    python seed.py [--org-id <organization_id>]
-
-Defaults to ORGANIZATION_ID env var, or "default-org" if neither is set.
-The assistant is created with status="Active" so it appears in the agents list.
+    uv run python seed.py [--org-id <organization_id>]
 """
-
-import asyncio
-import os
-import sys
-import uuid
-from pathlib import Path
-
-# ---------------------------------------------------------------------------
-# Resolve organization ID
-# ---------------------------------------------------------------------------
 
 import argparse
+import ast
+import asyncio
+import os
+import re
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
-parser = argparse.ArgumentParser(description="Seed Justdial bot into local DB")
-parser.add_argument("--org-id", default=None, help="Organization ID to assign the bot to")
+parser = argparse.ArgumentParser()
+parser.add_argument("--org-id", default=None)
 args = parser.parse_args()
-
 ORGANIZATION_ID = args.org_id or os.environ.get("ORGANIZATION_ID", "default-org")
 
-# ---------------------------------------------------------------------------
-# Load the system prompt from system_prompt.txt if available
-# ---------------------------------------------------------------------------
-
-_PROMPT_FILE = Path(__file__).parent.parent / "voicebot_nodcode_platform/examples/quickstart/system_prompt.txt"
-
-if _PROMPT_FILE.exists():
-    SYSTEM_PROMPT = _PROMPT_FILE.read_text(encoding="utf-8")
-    print(f"[Seed] Loaded system prompt from {_PROMPT_FILE} ({len(SYSTEM_PROMPT)} chars)")
-else:
-    # Embedded fallback — same as SYSTEM_PROMPT constant in bot_livekit_sip.py
-    SYSTEM_PROMPT = """
-ROLE
-You are Tanya, a product qualification agent calling on behalf of Justdial. The customer recently searched for a product on Justdial. Your only job is to ask them a fixed set of qualification questions — one at a time, in order — so Justdial can connect them with the right sellers.
-
-You are not a salesperson. You do not recommend, compare, or evaluate products. You do not answer anything outside this qualification task.
-
-LANGUAGE
-
-{script_rule}
-
-Allowed English terms — use exactly as written, do not transliterate:
-AC, machine, washing machine, split, window, ton, kg, fully automatic, semi automatic,
-top load, front load, brand, model, type, budget, capacity, inverter, Justdial.
-
-When in doubt about a {language_name} word, use English. Never use formal or literary words.
-
-TONE
-
-Speak like a warm, professional call center agent — natural, brief, and efficient. Not robotic, not overly formal.
-Every response: 1 acknowledgement + 1 question. Maximum 15 words total.
-Always end with a question mark.
-
-CONVERSATION FLOW
-
-Step 1 — Opening
-Deliver the greeting from the call context exactly.
-After the customer confirms they still need the product, say one bridging sentence before the first question:
-"अच्छा जी, तो आपसे कुछ details लेनी हैं — सही sellers से connect कराने के लिए."
-Then ask Question 1.
-
-Step 2 — Questions
-Ask every question from the CALL CONTEXT below, strictly in the listed order.
-One question per turn. No skipping, combining, or reordering.
-No questions outside the schema list.
-
-Step 3 — Closing
-After all questions are answered:
-"ठीक है जी, सारी details मिल गईं. जल्द ही relevant sellers आपसे contact करेंगे. आपका समय देने के लिए शुक्रिया."
-End the call.
-
-HARD RULES
-
-One question per response — no exceptions.
-Never advance past the current question until the user has directly answered it.
-Never recommend a product, brand, or option.
-Never give prices, cost estimates, or budget judgments.
-Never ask questions outside the schema.
-Number format: write "डेढ़" not "1.5". Write "ढाई" not "2.5".
-Forbidden formal words — never use: शयनकक्ष, बैठक कक्ष, कार्यालय, स्थापित, आवश्यकता, पर्याप्त, उचित, उपयुक्त, सूचित, प्राप्त, विवरण.
-
-PRE-RESPONSE CHECKLIST
-
-Is there exactly one question?
-Is it in {language_name} with only the allowed English terms?
-Is the total response under 20 words?
-Did I acknowledge the user first?
-If it is a radio question: did I list ALL options?
-Am I following all HARD RULES?
-
-PRODUCT CHANGE HANDLING
-
-If the buyer says they want a DIFFERENT product, do the following IN ORDER:
-1. Say a brief filler out loud FIRST: "जी, एक moment जी." (or "जी, देखती हूँ.")
-2. Then call FetchCategorySchema with srchterm set to the new product in English (e.g., "cctv", "refrigerator", "washing-machine", "microwave").
-3. The function result will tell you exactly what Question 1 is — ask it immediately after a ONE sentence acknowledgment.
-4. Do NOT mention sellers, do NOT say a closing line, do NOT end the call.
-
-Example:
-Buyer: "Actually I need CCTV cameras for my shop"
-You: "जी, एक moment जी." [call FetchCategorySchema(srchterm="cctv")]
-[Function returns: product=CCTV, Question 1="आपको कौन सा CCTV system चाहिए?"]
-You: "जी, CCTV के लिए बात करते हैं। आपको कौन सा CCTV system चाहिए — analog, IP, wireless या hybrid?"
-"""
-    print("[Seed] system_prompt.txt not found — using embedded fallback prompt")
-
-
-# ---------------------------------------------------------------------------
-# DB setup (reuse the app's database module)
-# ---------------------------------------------------------------------------
-
 sys.path.insert(0, str(Path(__file__).parent))
-
-from database import engine, Base
-from models import Assistant
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy import select
-
-AsyncSession_ = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+from mongo import get_assistants_col, get_counters_col, next_sequence
 
 
 # ---------------------------------------------------------------------------
-# WebRTC bot system prompt — mirrors HINDI_SYSTEM_PROMPT in bot.py exactly
+# Extract system prompt from bot.py
 # ---------------------------------------------------------------------------
 
-WEBRTC_SYSTEM_PROMPT = """
-आप Justdial की phone agent Taanya हैं। आपका काम है customer से एक-एक करके product से related questions पूछना और उनके जवाब note करना।
-
-भाषा:
-- हमेशा Hindi (Devanagari script) और English का natural mix use करें।
-- Technical terms जैसे हैं वैसे रखें: Fully Automatic, Semi Automatic, kg, budget, etc.
-
-Response format:
-- हर बार सिर्फ एक ही question पूछें।
-- पहले customer के जवाब को short acknowledge करें, फिर अगला question।
-- Example: "अच्छा जी, और [अगला question]?"
-- हमेशा question mark पर खत्म करें।
-
-Choice questions (जब options दिए हों):
-- सभी options बोलें, एक भी मत छोड़ें।
-- Format: "[question] — opt1, opt2, opt3 या opt4?"
-- Schema में जो options हैं वही valid answers हैं।
-- अगर customer कोई और option बोले जो list में नहीं है:
-  → उसे closest schema option से map करें और confirm करें।
-  → Example: customer बोले "tower AC" और options हैं [Split AC, Window AC, Centralised AC]
-    → "जी, आप window AC या centralised AC की बात कर रहे हैं — कौन सा?"
-  → Customer की confirm के बाद ही अगला question।
-- अगर बिल्कुल unrelated हो → politely फिर से पूछें सभी options के साथ।
-- Exception: "डेढ़ ton" = "1.5 Ton" जैसे equivalent expressions को directly accept करें।
-
-Quantity questions (जब unit दिया हो):
-- सिर्फ पूछें कि कितना चाहिए — खुद से कोई options मत बनाएं।
-- Example: "कितनी capacity चाहिए — kg में बताइए?"
-
-Irrelevant जवाब:
-- अगर customer का जवाब question से बिल्कुल related नहीं है तो same question फिर से पूछें।
-- अगर जवाब loosely related हो (जैसे "mini truck" for vehicle type) तो accept करें।
-
-Budget question:
-- बस amount पूछें। "जी, budget note कर लिया। Price के लिए sellers आपसे directly contact करेंगे।"
-- कभी price suggest या judge मत करें।
-
-Call end:
-- सभी questions complete होने पर: "शुक्रिया जी, time देने के लिए। जल्द ही sellers आपसे contact करेंगे। अच्छा दिन हो आपका।"
-- "नहीं चाहिए" या rude reply → politely exit करें।
-
-PRODUCT CHANGE HANDLING
-
-If the buyer says they want a DIFFERENT product, do the following IN ORDER:
-1. Say a brief filler out loud FIRST: "जी, एक moment जी." (or "जी, देखती हूँ.")
-2. Then call FetchCategorySchema with srchterm set to the new product in English (e.g., "cctv", "refrigerator", "washing-machine", "microwave").
-3. The function result will tell you exactly what Question 1 is — ask it immediately after a ONE sentence acknowledgment.
-4. Do NOT mention sellers, do NOT say a closing line, do NOT end the call.
-
-Example:
-Buyer: "Actually I need CCTV cameras for my shop"
-You: "जी, एक moment जी." [call FetchCategorySchema(srchterm="cctv")]
-[Function returns: product=CCTV, Question 1="आपको कौन सा CCTV system चाहिए?"]
-You: "जी, CCTV के लिए बात करते हैं। आपको कौन सा CCTV system चाहिए — analog, IP, wireless या hybrid?"
-"""
+def _load_simran_prompt() -> str:
+    bot_file = Path(__file__).parent.parent / "voicebot_nodcode_platform" / "bot.py"
+    if not bot_file.exists():
+        print("[Seed] bot.py not found — using placeholder prompt")
+        return "Update this system prompt from the dashboard."
+    src = bot_file.read_text(encoding="utf-8")
+    # Match the parenthesised string expression after "system_prompt":
+    m = re.search(
+        r'"system_prompt":\s*(\((?:[^()]*|\([^()]*\))*\))\s*,\s*"initial_message"',
+        src,
+        re.DOTALL,
+    )
+    if m:
+        try:
+            prompt = ast.literal_eval(m.group(1).strip())
+            print(f"[Seed] Loaded Simran system_prompt from bot.py ({len(prompt)} chars)")
+            return prompt
+        except Exception as e:
+            print(f"[Seed] ast.literal_eval failed: {e} — using placeholder")
+    else:
+        print("[Seed] Could not find system_prompt in bot.py — using placeholder")
+    return "Update this system prompt from the dashboard."
 
 
-def _print_bot(label: str, bot: "Assistant"):
-    print(f"[Seed] ✓ {label} created!")
-    print(f"       assistant_id : {bot.assistant_id}")
-    print(f"       name         : {bot.name}")
-    print(f"       org          : {bot.organization_id}")
-    print(f"       language     : {bot.language}")
-    print(f"       temperature  : {bot.temperature}")
-    print(f"       vad_start    : {bot.gemini_start_sensitivity}")
-    print(f"       vad_end      : {bot.gemini_end_sensitivity}")
-    print(f"       silence_ms   : {bot.gemini_silence_duration_ms}")
-    print(f"       max_duration : {bot.max_call_duration}s")
+# ---------------------------------------------------------------------------
+# Bot documents
+# ---------------------------------------------------------------------------
 
+SIMRAN_UUID = "e8c0fd31-2d60-4531-a029-2047b17988c4"
+
+SIMRAN_FUNCTIONS = [
+    {
+        "name": "FetchLead",
+        "description": "Fetch customer lead details from Justdial MIS API at call start.",
+        "url": "http://192.168.14.101:3006/leads/ai-lead-qualify/mis",
+        "method": "GET",
+        "headers": {},
+        "query_params": {"lead_id": "", "mobile": "", "page": "1", "limit": "1", "ai_partner": "inh-suny-bot"},
+        "body_format": "json",
+        "custom_body": "",
+        "schema": {},
+    },
+    {
+        "name": "FetchCategorySchema",
+        "description": "Fetches the new qualification schema when the buyer changes their product mid-call.",
+        "url": "http://192.168.8.67:8000/leads/ai-lead-qualify/search",
+        "method": "GET",
+        "headers": {},
+        "query_params": {"lead_id": "", "search_term": ""},
+        "body_format": "json",
+        "custom_body": "",
+        "schema": {
+            "type": "object",
+            "properties": {"srchterm": {"type": "string", "description": "New product search term in English"}},
+            "required": ["srchterm"],
+        },
+    },
+]
+
+
+def _simran_doc(aid: int, prompt: str) -> dict:
+    now = datetime.now(timezone.utc)
+    return {
+        "id": aid,
+        "assistant_id": SIMRAN_UUID,
+        "organization_id": ORGANIZATION_ID,
+        "name": "Simran — Justdial Lead Qualifier (SIP)",
+        "description": "Active SIP/LiveKit voice bot for Justdial lead qualification. Female persona 'Simran'. Hindi/Hinglish with full conversation rules.",
+        "category": "Customer Service",
+        "tags": ["hindi", "justdial", "qualification", "outbound", "sip", "livekit", "simran"],
+        "status": "Active",
+        "prompt": prompt,
+        "initial_message": "हेलो, मैं Simran बोल रही हूँ Justdial से — आपको {product} की requirement है ना?",
+        "call_end_text": "ठीक है जी, सारी details मिल गईं. जल्द ही relevant sellers आपसे contact करेंगे. आपका समय देने के लिए शुक्रिया.",
+        "mis_api_base": "http://192.168.8.67:8000",
+        "callback_api_url": "http://192.168.14.101:3006/leads/ai-lead-qualify/callback",
+        "category_change_api": "http://192.168.8.67:8000/leads/ai-lead-qualify/search",
+        "script_rule": (
+            "By default, write in Hindi (Devanagari) script.\n"
+            "Natural Hinglish is encouraged — mix in everyday English words the way a real call center agent would.\n"
+            "API-provided English words (from question.text or option.text): always use them exactly as-is.\n"
+            "EXCEPTION — Language switching: If the caller has explicitly asked you to speak in a different language, switch entirely."
+        ),
+        "opening_instruction": "",
+        "closing_instruction": (
+            "Once every question has an answer, say the closing line in whichever language is active:\n"
+            "• Hindi (default): \"ठीक है जी, सारी details मिल गईं. जल्द ही relevant sellers आपसे contact करेंगे. आपका समय देने के लिए शुक्रिया.\"\n"
+            "• English (if language was switched): \"Alright, I have all the details. The relevant sellers will contact you soon. Thank you for your time.\"\n"
+            "Say this once, only when ALL questions are done."
+        ),
+        "timeout_message": (
+            "जी, मुझे सिर्फ 5 मिनट तक बात करने की permission है. "
+            "जो भी details मिली हैं, sellers जल्द ही आपसे contact करेंगे. "
+            "आपका समय देने के लिए धन्यवाद. अलविदा!"
+        ),
+        "function_calling": True,
+        "functions": SIMRAN_FUNCTIONS,
+        "language": "hindi",
+        "temperature": 0.7,
+        "gemini_start_sensitivity": "START_SENSITIVITY_HIGH",
+        "gemini_end_sensitivity": "END_SENSITIVITY_LOW",
+        "gemini_silence_duration_ms": 1500,
+        "gemini_prefix_padding_ms": 200,
+        "max_call_duration": 300,
+        "filler_message": ["अच्छा,", "हाँ,", "जी,", "तो,", "ठीक है,"],
+        "function_filler_message": ["एक moment जी,", "जी, देख रही हूँ,"],
+        "sarvam_min_rms": 600,
+        "sarvam_min_speech_ms": 500,
+        "sarvam_min_speech_ms_singleword": 800,
+        "sarvam_silero_threshold": 0.5,
+        "sarvam_silero_min_speech_ms": 120,
+        "gemini_silero_fallback_speech_ms": 150,
+        "post_speech_hold_ms": 300,
+        "inactivity_first_rescue_secs": 4.0,
+        "inactivity_first_nudge_gap_secs": 4.0,
+        "inactivity_nudge_secs": 10.0,
+        "inactivity_close_secs": 5.0,
+        "analysis_prompt": "",
+        "is_deleted": False,
+        "is_active": True,
+        "calls_today": 0,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Seed
+# ---------------------------------------------------------------------------
 
 async def seed():
-    # Ensure tables exist
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    col = get_assistants_col()
+    await col.create_index("assistant_id", unique=True)
 
-    async with AsyncSession_() as db:
+    prompt = _load_simran_prompt()
 
-        # ── 1. SIP / LiveKit bot (bot_livekit_sip.py) ────────────────────────
-        sip_existing = (
-            await db.execute(
-                select(Assistant).where(
-                    Assistant.organization_id == ORGANIZATION_ID,
-                    Assistant.name == "Tanya — Justdial Lead Qualifier",
-                    Assistant.is_deleted == False,
-                )
-            )
-        ).scalar_one_or_none()
+    # Upsert Simran bot
+    existing = await col.find_one({"assistant_id": SIMRAN_UUID})
+    if existing:
+        # Update all config fields (keep id/created_at intact)
+        update_fields = _simran_doc(existing["id"], prompt)
+        update_fields.pop("id", None)
+        update_fields.pop("created_at", None)
+        update_fields["updated_at"] = datetime.now(timezone.utc)
+        await col.update_one({"assistant_id": SIMRAN_UUID}, {"$set": update_fields})
+        print(f"[Seed] Simran bot updated in MongoDB: assistant_id={SIMRAN_UUID}")
+    else:
+        aid = await next_sequence("assistant_id")
+        doc = _simran_doc(aid, prompt)
+        await col.insert_one(doc)
+        print(f"[Seed] Simran bot created in MongoDB: assistant_id={SIMRAN_UUID}, id={aid}")
 
-        # ── MIS lead fetch function — shared by both bots ────────────────────
-        MIS_LEAD_FUNCTION = {
-            "id": "mis_lead_fetch",
-            "name": "FetchLead",
-            "description": (
-                "Fetch customer lead details from Justdial MIS API at call start. "
-                "Pass lead_id and mobile as query params when testing from the dashboard."
-            ),
-            "url": "http://192.168.14.101:3006/GetLeadV2",
-            "method": "GET",
-            "headers": {},
-            "query_params": {
-                "lead_id": "",
-                "mobile": "",
-            },
-            "body_format": "json",
-            "custom_body": "",
-            "schema": {},
-        }
-
-        # ── Category schema fetch — called by LLM when buyer changes product ─
-        CATEGORY_SCHEMA_FUNCTION = {
-            "id": "category_schema_fetch",
-            "name": "FetchCategorySchema",
-            "description": (
-                "Call this when the buyer changes their product requirement mid-call "
-                "(e.g., 'actually I need a refrigerator', 'I want CCTV instead'). "
-                "Fetches the new qualification schema for the new product category. "
-                "Pass the new product as a simple English search term."
-            ),
-            "url": "http://192.168.20.105:1080/services/abd/abd_beta.php",
-            "method": "GET",
-            "headers": {},
-            "query_params": {
-                "v": "1",
-                "chatbot": "1",
-                "pos_change": "1",
-                "srchterm": "",
-            },
-            "body_format": "json",
-            "custom_body": "",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "srchterm": {
-                        "type": "string",
-                        "description": (
-                            "New product search term in English, e.g. 'washing-machine', "
-                            "'cctv', 'refrigerator', 'air-conditioner'"
-                        ),
-                    }
-                },
-                "required": ["srchterm"],
-            },
-        }
-
-        if sip_existing:
-            print(f"[Seed] SIP bot already exists: assistant_id={sip_existing.assistant_id}")
-            changed = False
-            existing_fn_names = {f.get("name") for f in (sip_existing.functions or [])}
-            fns = list(sip_existing.functions or [])
-            if "FetchLead" not in existing_fn_names:
-                fns.append(MIS_LEAD_FUNCTION)
-                changed = True
-            if "FetchCategorySchema" not in existing_fn_names:
-                fns.append(CATEGORY_SCHEMA_FUNCTION)
-                changed = True
-            if changed:
-                sip_existing.functions = fns
-            if not sip_existing.function_calling:
-                sip_existing.function_calling = True
-                changed = True
-            if "PRODUCT CHANGE HANDLING" not in (sip_existing.prompt or ""):
-                sip_existing.prompt = SYSTEM_PROMPT
-                changed = True
-                print("[Seed] SIP bot prompt updated with PRODUCT CHANGE HANDLING")
-            if changed:
-                await db.commit()
-                print(f"[Seed] SIP bot updated: functions={[f['name'] for f in fns]}")
-        else:
-            sip_bot = Assistant(
-                assistant_id=str(uuid.uuid4()),
-                organization_id=ORGANIZATION_ID,
-                name="Tanya — Justdial Lead Qualifier",
-                description=(
-                    "Hindi product qualification bot for SIP/LiveKit calls. "
-                    "Calls Justdial leads, confirms their product enquiry, asks "
-                    "schema-driven qualification questions one by one, and posts "
-                    "structured results to the callback API."
-                ),
-                category="Customer Service",
-                tags=["hindi", "justdial", "qualification", "outbound", "sip", "livekit"],
-                status="Active",
-
-                # ── System prompt ────────────────────────────────────────────
-                prompt=SYSTEM_PROMPT,
-
-                # ── Greeting & closing ───────────────────────────────────────
-                initial_message=(
-                    "हेलो, मैं Tanya बोल रही हूँ Justdial से — "
-                    "आपको {product} की requirement है ना?"
-                ),
-                call_end_text=(
-                    "ठीक है जी, सारी details मिल गईं. "
-                    "जल्द ही relevant sellers आपसे contact करेंगे. "
-                    "आपका समय देने के लिए शुक्रिया."
-                ),
-
-                # ── API URLs ─────────────────────────────────────────────────
-                mis_api_base="http://192.168.14.101:3006",
-                callback_api_url="http://192.168.14.101:3006/leads/ai-lead-qualify/callback",
-                category_change_api="http://192.168.20.105:1080/services/abd/abd_beta.php",
-
-                # ── Prompt config ────────────────────────────────────────────
-                script_rule=(
-                    "Every word MUST be in Hindi (Devanagari) script ONLY. "
-                    "NEVER output Malayalam, Tamil, Kannada, Marathi, or any other language. "
-                    "Hindi only. If you find yourself writing ക, ශ, ர, ಸ, or any "
-                    "non-Devanagari/non-English script → STOP and rewrite in Hindi."
-                ),
-                opening_instruction=(
-                    "Greet करें, confirm करें कि product अभी भी चाहिए। "
-                    "Customer के YES कहने पर bridging sentence बोलें, फिर Q1 शुरू करें।"
-                ),
-                closing_instruction=(
-                    "सभी questions complete होने पर: "
-                    "'ठीक है जी, सारी details मिल गईं. जल्द ही relevant sellers "
-                    "आपसे contact करेंगे. आपका समय देने के लिए शुक्रिया.' "
-                    "Call warmly close करें।"
-                ),
-                timeout_message=(
-                    "जी, मुझे सिर्फ 5 मिनट तक बात करने की permission है. "
-                    "जो भी details मिली हैं, sellers जल्द ही आपसे contact करेंगे. "
-                    "आपका समय देने के लिए धन्यवाद. अलविदा!"
-                ),
-
-                # ── Function calling ─────────────────────────────────────────
-                function_calling=True,
-                functions=[MIS_LEAD_FUNCTION, CATEGORY_SCHEMA_FUNCTION],
-
-                # ── VAD / behaviour — mirrors bot_livekit_sip.py hardcoded values ──
-                language="hindi",
-                temperature=0.4,
-                gemini_start_sensitivity="START_SENSITIVITY_LOW",   # low: ignore background noise on SIP
-                gemini_end_sensitivity="END_SENSITIVITY_HIGH",
-                gemini_prefix_padding_ms=100,
-                gemini_silence_duration_ms=800,
-                max_call_duration=300,   # 5 minutes
-
-                filler_message=["अच्छा,", "हाँ,", "जी,", "तो,", "ठीक है,"],
-                function_filler_message=["एक moment जी,", "जी, देख रही हूँ,"],
-
-                is_deleted=False,
-                is_active=True,
-            )
-            db.add(sip_bot)
-            await db.commit()
-            await db.refresh(sip_bot)
-            _print_bot("SIP/LiveKit bot", sip_bot)
-            print()
-            print("  Use this assistant_id in LiveKit room metadata:")
-            print(f'  {{"assistant_id": "{sip_bot.assistant_id}", "lead_id": "...", "call_id": "..."}}')
-            print()
-
-        # ── 2. WebRTC bot (bot.py) ────────────────────────────────────────────
-        webrtc_existing = (
-            await db.execute(
-                select(Assistant).where(
-                    Assistant.organization_id == ORGANIZATION_ID,
-                    Assistant.name == "Taanya — Justdial WebRTC Bot",
-                    Assistant.is_deleted == False,
-                )
-            )
-        ).scalar_one_or_none()
-
-        if webrtc_existing:
-            print(f"[Seed] WebRTC bot already exists: assistant_id={webrtc_existing.assistant_id}")
-            changed = False
-            existing_fn_names = {f.get("name") for f in (webrtc_existing.functions or [])}
-            fns = list(webrtc_existing.functions or [])
-            if "FetchLead" not in existing_fn_names:
-                fns.append(MIS_LEAD_FUNCTION)
-                changed = True
-            if "FetchCategorySchema" not in existing_fn_names:
-                fns.append(CATEGORY_SCHEMA_FUNCTION)
-                changed = True
-            if changed:
-                webrtc_existing.functions = fns
-            if not webrtc_existing.function_calling:
-                webrtc_existing.function_calling = True
-                changed = True
-            if "PRODUCT CHANGE HANDLING" not in (webrtc_existing.prompt or ""):
-                webrtc_existing.prompt = WEBRTC_SYSTEM_PROMPT
-                changed = True
-                print("[Seed] WebRTC bot prompt updated with PRODUCT CHANGE HANDLING")
-            if changed:
-                await db.commit()
-                print(f"[Seed] WebRTC bot updated: functions={[f['name'] for f in fns]}")
-        else:
-            webrtc_bot = Assistant(
-                assistant_id=str(uuid.uuid4()),
-                organization_id=ORGANIZATION_ID,
-                name="Taanya — Justdial WebRTC Bot",
-                description=(
-                    "Hindi product qualification bot for browser-based WebRTC calls. "
-                    "Used for test calls from the dashboard. Fetches lead from MIS when "
-                    "lead_id or mobile is provided in query params."
-                ),
-                category="Customer Service",
-                tags=["hindi", "justdial", "qualification", "webrtc", "browser"],
-                status="Active",
-
-                # ── System prompt — mirrors HINDI_SYSTEM_PROMPT in bot.py ────
-                prompt=WEBRTC_SYSTEM_PROMPT,
-
-                # ── Greeting ─────────────────────────────────────────────────
-                initial_message=(
-                    "नमस्ते जी, मैं Taanya बोल रही हूँ Justdial से — "
-                    "आपको {product} की requirement है ना?"
-                ),
-                call_end_text=(
-                    "शुक्रिया जी, time देने के लिए। "
-                    "जल्द ही sellers आपसे contact करेंगे। "
-                    "अच्छा दिन हो आपका।"
-                ),
-
-                # ── API URLs — same MIS endpoints ────────────────────────────
-                mis_api_base="http://192.168.14.101:3006",
-                callback_api_url="http://192.168.14.101:3006/leads/ai-lead-qualify/callback",
-                category_change_api="http://192.168.20.105:1080/services/abd/abd_beta.php",
-
-                # ── Prompt config ────────────────────────────────────────────
-                script_rule=(
-                    "Every word MUST be in Hindi (Devanagari) script ONLY. "
-                    "Use natural Hinglish — mix Hindi and technical English terms naturally."
-                ),
-                opening_instruction=(
-                    "Greeting के बाद customer के confirm करने पर Q1 से शुरू करें।"
-                ),
-                closing_instruction=(
-                    "सभी questions complete होने पर warmly close करें: "
-                    "'शुक्रिया जी, time देने के लिए। जल्द ही sellers आपसे contact करेंगे।'"
-                ),
-                timeout_message="",   # WebRTC calls have no time limit by default
-
-                # ── Function calling ─────────────────────────────────────────
-                function_calling=True,
-                functions=[MIS_LEAD_FUNCTION, CATEGORY_SCHEMA_FUNCTION],
-
-                # ── VAD / behaviour — mirrors bot.py fallback values ──────────
-                language="hindi",
-                temperature=0.4,
-                gemini_start_sensitivity="START_SENSITIVITY_HIGH",  # high: browser mic is cleaner
-                gemini_end_sensitivity="END_SENSITIVITY_HIGH",
-                gemini_prefix_padding_ms=100,
-                gemini_silence_duration_ms=800,
-                max_call_duration=0,    # 0 = no limit for browser WebRTC calls
-
-                filler_message=["अच्छा जी,", "हाँ,", "जी,", "तो,", "ठीक है,"],
-                function_filler_message=["एक moment जी,", "जी, देख रही हूँ,"],
-
-                is_deleted=False,
-                is_active=True,
-            )
-            db.add(webrtc_bot)
-            await db.commit()
-            await db.refresh(webrtc_bot)
-            _print_bot("WebRTC bot", webrtc_bot)
-            print()
-            print("  Use this assistant_id in the dashboard test-call dialog.")
-            print(f'  assistant_id: "{webrtc_bot.assistant_id}"')
-            print()
+    print(f"[Seed] Done. prompt_len={len(prompt)}")
+    print()
+    print("  Set this in LiveKit room metadata:")
+    print(f'  {{"assistant_id": "{SIMRAN_UUID}", "lead_id": "...", "call_id": "..."}}')
 
 
 if __name__ == "__main__":
