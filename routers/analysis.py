@@ -1,0 +1,489 @@
+"""Analysis router — reads ai_lead_qualify.call_transcripts.
+
+Endpoints:
+  GET  /api/analysis/calls                    — paginated list of call transcripts + outcomes
+  GET  /api/analysis/calls/{call_id}          — full transcript + analysis sub-doc
+  POST /api/analysis/calls/{call_id}/rerun    — re-run analysis with assistant's analysis_prompt
+  GET  /api/analysis/prompt/{assistant_id}    — read assistant's analysis_prompt
+  PUT  /api/analysis/prompt/{assistant_id}    — update assistant's analysis_prompt
+  GET  /api/metrics/{assistant_id}            — real aggregated metrics from call_transcripts
+"""
+
+from __future__ import annotations
+
+import json as _json
+import os
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+
+from bson import ObjectId
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+
+try:
+    from ..mongo import get_transcripts_col, get_assistants_col
+except ImportError:
+    from mongo import get_transcripts_col, get_assistants_col
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "gemini-2.0-flash-lite")
+
+router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _str_id(doc: dict) -> dict:
+    """Convert _id to string for JSON serialisation."""
+    if "_id" in doc:
+        doc["_id"] = str(doc["_id"])
+    return doc
+
+
+def _parse_dt(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 1. List call transcripts
+# ---------------------------------------------------------------------------
+
+@router.get("/api/analysis/calls")
+async def list_analysis_calls(
+    assistant_id: Optional[str] = Query(None),
+    outcome: Optional[str] = Query(None),
+    tagged: Optional[bool] = Query(None),
+    date_from: Optional[str] = Query(None, description="ISO date e.g. 2026-01-01"),
+    date_to: Optional[str] = Query(None, description="ISO date e.g. 2026-12-31"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=200),
+):
+    col = get_transcripts_col()
+    query: dict = {}
+
+    if assistant_id:
+        query["assistant_id"] = assistant_id
+    if tagged is not None:
+        query["tagged"] = tagged
+    if outcome:
+        query["analysis.call_outcome"] = outcome
+    if date_from or date_to:
+        dt_filter: dict = {}
+        if date_from:
+            try:
+                dt_filter["$gte"] = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+        if date_to:
+            try:
+                dt_filter["$lte"] = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+        if dt_filter:
+            query["call_start_time"] = dt_filter
+
+    # Project: omit heavy fields for listing
+    projection = {
+        "_id": 1,
+        "call_id": 1,
+        "lead_id": 1,
+        "assistant_id": 1,
+        "call_start_time": 1,
+        "call_end_time": 1,
+        "call_duration_sec": 1,
+        "status": 1,
+        "tagged": 1,
+        "tagged_at": 1,
+        "analysis.call_outcome": 1,
+        "analysis.call_summary": 1,
+        "analysis.call_outcome_description": 1,
+        "analysis.lead_intent_score": 1,
+        "lead_record.buyer_details.buyer_name": 1,
+        "lead_record.buyer_details.buyer_number": 1,
+        "lead_record.search_context.searched_keyword": 1,
+    }
+
+    total = await col.count_documents(query)
+    cursor = col.find(query, projection).sort("call_start_time", -1).skip(skip).limit(limit)
+    docs = await cursor.to_list(length=limit)
+
+    return {
+        "calls": [_str_id(d) for d in docs],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 2. Get single call transcript + analysis
+# ---------------------------------------------------------------------------
+
+@router.get("/api/analysis/calls/{call_id}")
+async def get_analysis_call(call_id: str):
+    col = get_transcripts_col()
+
+    # Try ObjectId first, then call_id string
+    doc = None
+    if len(call_id) == 24:
+        try:
+            doc = await col.find_one({"_id": ObjectId(call_id)})
+        except Exception:
+            pass
+    if doc is None:
+        doc = await col.find_one({"call_id": call_id})
+
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"Call {call_id!r} not found")
+
+    return _str_id(doc)
+
+
+# ---------------------------------------------------------------------------
+# 3. Rerun analysis
+# ---------------------------------------------------------------------------
+
+class RerunRequest(BaseModel):
+    analysis_prompt_override: Optional[str] = None  # If None, uses assistant's stored prompt
+
+
+@router.post("/api/analysis/calls/{call_id}/rerun")
+async def rerun_analysis(call_id: str, body: RerunRequest = RerunRequest()):
+    col = get_transcripts_col()
+
+    # Find the doc
+    doc = None
+    if len(call_id) == 24:
+        try:
+            doc = await col.find_one({"_id": ObjectId(call_id)})
+        except Exception:
+            pass
+    if doc is None:
+        doc = await col.find_one({"call_id": call_id})
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"Call {call_id!r} not found")
+
+    # Build transcript text
+    transcripts = doc.get("transcript") or []
+    muted = doc.get("muted_transcript") or []
+    lines = "\n".join(
+        f"{t.get('role', '?').upper()}: {t.get('text', '')}"
+        for t in transcripts
+        if t.get("text")
+    )
+    muted_lines = "\n".join(
+        f"[MUTED USER]: {m}" for m in muted if isinstance(m, str) and m.strip()
+    )
+
+    if not lines:
+        raise HTTPException(status_code=422, detail="No transcript text to analyse")
+
+    # Resolve the analysis prompt
+    prompt_text = body.analysis_prompt_override or ""
+
+    if not prompt_text:
+        # Try to load from assistant's stored analysis_prompt
+        assistant_id = doc.get("assistant_id")
+        if assistant_id:
+            a_col = get_assistants_col()
+            agent = await a_col.find_one({"assistant_id": assistant_id}, {"analysis_prompt": 1})
+            if agent:
+                prompt_text = agent.get("analysis_prompt") or ""
+
+    if prompt_text.strip():
+        prompt = (
+            prompt_text
+            .replace("{transcript}", lines)
+            .replace("{muted_transcript}", muted_lines or "")
+        )
+    else:
+        # Compact default
+        prompt = f"""You are a call-analysis engine for JustDial AI outbound qualification calls.
+Analyse the transcript and return a JSON object with keys:
+  call_outcome (string), call_outcome_description (string), call_summary (string),
+  product_confirmed (bool), lead_intent_score (int 1-5), is_business (bool).
+
+TRANSCRIPT:
+{lines}
+{muted_lines}
+
+Return only valid JSON, no markdown."""
+
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=503, detail="GEMINI_API_KEY not configured")
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{ANALYSIS_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
+    }
+
+    import asyncio
+
+    def _call_gemini():
+        req = urllib.request.Request(
+            url,
+            data=_json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return _json.loads(r.read().decode())
+
+    try:
+        raw = await asyncio.get_event_loop().run_in_executor(None, _call_gemini)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gemini request failed: {e}")
+
+    try:
+        text_out = raw["candidates"][0]["content"]["parts"][0]["text"]
+        result = _json.loads(text_out)
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not parse Gemini response")
+
+    now = datetime.now(timezone.utc)
+    analysis_update = {
+        "call_outcome": result.get("call_outcome", ""),
+        "call_outcome_description": result.get("call_outcome_description", ""),
+        "call_summary": result.get("call_summary", ""),
+        "product_confirmed": result.get("product_confirmed", False),
+        "lead_intent_score": result.get("lead_intent_score"),
+        "is_business": result.get("is_business", False),
+        "qna": result.get("qna", []),
+        "product_change": result.get("product_change"),
+        "urgency_flag": result.get("urgency_flag", False),
+        "rerun_at": now.isoformat(),
+    }
+
+    await col.update_one(
+        {"_id": doc["_id"]},
+        {"$set": {
+            "analysis": analysis_update,
+            "tagged": True,
+            "tagged_at": now.isoformat(),
+        }},
+    )
+
+    return {"analysis": analysis_update, "raw": result}
+
+
+# ---------------------------------------------------------------------------
+# 4. Read / update assistant's analysis_prompt
+# ---------------------------------------------------------------------------
+
+@router.get("/api/analysis/prompt/{assistant_id}")
+async def get_analysis_prompt(assistant_id: str):
+    col = get_assistants_col()
+    doc = await col.find_one({"assistant_id": assistant_id}, {"analysis_prompt": 1, "name": 1})
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Assistant not found")
+    return {
+        "assistant_id": assistant_id,
+        "name": doc.get("name", ""),
+        "analysis_prompt": doc.get("analysis_prompt") or "",
+    }
+
+
+class UpdatePromptRequest(BaseModel):
+    analysis_prompt: str
+
+
+@router.put("/api/analysis/prompt/{assistant_id}")
+async def update_analysis_prompt(assistant_id: str, body: UpdatePromptRequest):
+    col = get_assistants_col()
+    result = await col.update_one(
+        {"assistant_id": assistant_id},
+        {"$set": {"analysis_prompt": body.analysis_prompt, "updated_at": datetime.now(timezone.utc)}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Assistant not found")
+    return {"assistant_id": assistant_id, "analysis_prompt": body.analysis_prompt}
+
+
+# ---------------------------------------------------------------------------
+# 5. Real metrics aggregation
+# ---------------------------------------------------------------------------
+
+OUTCOME_SUCCESS = {
+    "Interested", "Callback", "Will do it Myself", "Already Purchased",
+}
+
+
+@router.get("/api/metrics/{assistant_id}")
+async def get_metrics(
+    assistant_id: str,
+    range: str = Query("7d", description="Time range: 1d, 7d, 30d, 90d"),
+):
+    col = get_transcripts_col()
+
+    # Resolve date range
+    now = datetime.now(timezone.utc)
+    range_days = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}.get(range, 7)
+    since = now - timedelta(days=range_days)
+    prev_since = since - timedelta(days=range_days)
+
+    def _date_query(start: datetime, end: datetime) -> dict:
+        base: dict = {}
+        if assistant_id and assistant_id != "all":
+            base["assistant_id"] = assistant_id
+        # call_start_time may be a datetime or ISO string
+        base["$or"] = [
+            {"call_start_time": {"$gte": start, "$lt": end}},
+            {"call_start_time": {"$gte": start.isoformat(), "$lt": end.isoformat()}},
+        ]
+        return base
+
+    # Current period stats
+    q_curr = _date_query(since, now)
+    total = await col.count_documents(q_curr)
+
+    # Aggregate outcomes
+    pipeline_outcomes = [
+        {"$match": q_curr},
+        {"$group": {
+            "_id": "$analysis.call_outcome",
+            "count": {"$sum": 1},
+            "avg_duration": {"$avg": "$call_duration_sec"},
+        }},
+    ]
+    outcome_docs = await col.aggregate(pipeline_outcomes).to_list(length=100)
+
+    successful = sum(
+        d["count"] for d in outcome_docs
+        if d.get("_id") in OUTCOME_SUCCESS
+    )
+    failed = total - successful
+    success_rate = round((successful / total * 100) if total else 0, 2)
+
+    # Average duration across all calls
+    all_durations = [d.get("avg_duration") or 0 for d in outcome_docs]
+    avg_duration = round(sum(all_durations) / len(all_durations)) if all_durations else 0
+
+    # Today / this week / this month
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = now - timedelta(days=7)
+    month_start = now - timedelta(days=30)
+
+    def _period_query(start: datetime) -> dict:
+        base: dict = {}
+        if assistant_id and assistant_id != "all":
+            base["assistant_id"] = assistant_id
+        base["$or"] = [
+            {"call_start_time": {"$gte": start}},
+            {"call_start_time": {"$gte": start.isoformat()}},
+        ]
+        return base
+
+    calls_today = await col.count_documents(_period_query(today_start))
+    calls_week = await col.count_documents(_period_query(week_start))
+    calls_month = await col.count_documents(_period_query(month_start))
+
+    # Previous period for comparison
+    q_prev = _date_query(prev_since, since)
+    prev_total = await col.count_documents(q_prev)
+    prev_outcomes = await col.aggregate([
+        {"$match": q_prev},
+        {"$group": {"_id": "$analysis.call_outcome", "count": {"$sum": 1}}},
+    ]).to_list(length=100)
+    prev_successful = sum(d["count"] for d in prev_outcomes if d.get("_id") in OUTCOME_SUCCESS)
+    prev_success_rate = round((prev_successful / prev_total * 100) if prev_total else 0, 2)
+    total_change = round(((total - prev_total) / prev_total * 100) if prev_total else 0, 1)
+    sr_change = round(success_rate - prev_success_rate, 2)
+
+    # Daily trends for the range
+    trend_pipeline = [
+        {"$match": q_curr},
+        {"$addFields": {
+            "call_start_dt": {
+                "$cond": {
+                    "if": {"$type": "$call_start_time"},  # always true — just convert
+                    "then": {
+                        "$dateFromString": {
+                            "dateString": {"$toString": "$call_start_time"},
+                            "onError": None,
+                        }
+                    },
+                    "else": None,
+                }
+            }
+        }},
+        {"$group": {
+            "_id": {
+                "$dateToString": {
+                    "format": "%Y-%m-%d",
+                    "date": {
+                        "$cond": {
+                            "if": {"$eq": [{"$type": "$call_start_time"}, "date"]},
+                            "then": "$call_start_time",
+                            "else": {
+                                "$dateFromString": {
+                                    "dateString": "$call_start_time",
+                                    "onError": now,
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "totalCalls": {"$sum": 1},
+            "avgDuration": {"$avg": "$call_duration_sec"},
+            "outcomes": {"$push": "$analysis.call_outcome"},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+
+    try:
+        trend_docs = await col.aggregate(trend_pipeline).to_list(length=200)
+    except Exception:
+        trend_docs = []
+
+    call_trends = []
+    for td in trend_docs:
+        day_outcomes = td.get("outcomes", [])
+        day_total = td.get("totalCalls", 0)
+        day_success = sum(1 for o in day_outcomes if o in OUTCOME_SUCCESS)
+        call_trends.append({
+            "timestamp": f"{td['_id']}T00:00:00Z",
+            "totalCalls": day_total,
+            "successfulCalls": day_success,
+            "failedCalls": day_total - day_success,
+            "avgDuration": round(td.get("avgDuration") or 0),
+        })
+
+    # Outcome breakdown
+    outcome_breakdown = {d["_id"]: d["count"] for d in outcome_docs if d.get("_id")}
+
+    return {
+        "data": {
+            "overview": {
+                "totalCalls": total,
+                "successfulCalls": successful,
+                "failedCalls": failed,
+                "successRate": success_rate,
+                "avgCallDuration": avg_duration,
+                "callsToday": calls_today,
+                "callsThisWeek": calls_week,
+                "callsThisMonth": calls_month,
+            },
+            "comparison": {
+                "totalCallsChange": total_change,
+                "successRateChange": sr_change,
+                "avgDurationChange": 0,
+                "periodLabel": f"vs previous {range}",
+            },
+            "callTrends": call_trends,
+            "outcomeBreakdown": outcome_breakdown,
+        }
+    }

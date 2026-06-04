@@ -11,10 +11,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 try:
-    from .routers import assistants, call_logs
+    from .routers import assistants, call_logs, analysis
     from .mongo import get_assistants_col
 except ImportError:
-    from routers import assistants, call_logs
+    from routers import assistants, call_logs, analysis
     from mongo import get_assistants_col
 
 
@@ -47,6 +47,7 @@ app.add_middleware(
 #   GET http://localhost:8000/backend/api/assistants
 app.include_router(assistants.router, prefix="/backend")
 app.include_router(call_logs.router, prefix="/backend")
+app.include_router(analysis.router, prefix="/backend")
 
 
 @app.get("/health")

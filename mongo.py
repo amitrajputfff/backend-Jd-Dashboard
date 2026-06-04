@@ -1,8 +1,9 @@
 """Async MongoDB connection using Motor.
 
-Two logical databases on the same server (192.168.13.65):
+Three logical databases on the same server (192.168.13.65):
   - voicebot_platform  : call_logs (existing — do not rename)
-  - no_code_platform   : assistants + counters (agent config, NEW)
+  - no_code_platform   : assistants + counters (agent config)
+  - ai_lead_qualify    : call_transcripts (written by bot + callback worker)
 """
 
 import os
@@ -36,6 +37,13 @@ def get_assistants_col():
 def get_counters_col():
     """Auto-increment counters (used for integer `id` field on assistants)."""
     return _get_client()["no_code_platform"]["counters"]
+
+
+# ── ai_lead_qualify — call transcripts + analysis ────────────────────────────
+
+def get_transcripts_col():
+    """call_transcripts written by bot.py and tagged by callback_worker."""
+    return _get_client()["ai_lead_qualify"]["call_transcripts"]
 
 
 async def next_sequence(name: str) -> int:
