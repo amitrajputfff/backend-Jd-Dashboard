@@ -7,14 +7,17 @@ Run:
 
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+load_dotenv()  # load backend/.env before any module reads os.environ
+
 try:
-    from .routers import assistants, call_logs, analysis
+    from .routers import assistants, call_logs, analysis, phone_numbers
     from .mongo import get_assistants_col
 except ImportError:
-    from routers import assistants, call_logs, analysis
+    from routers import assistants, call_logs, analysis, phone_numbers
     from mongo import get_assistants_col
 
 
@@ -48,6 +51,7 @@ app.add_middleware(
 app.include_router(assistants.router, prefix="/backend")
 app.include_router(call_logs.router, prefix="/backend")
 app.include_router(analysis.router, prefix="/backend")
+app.include_router(phone_numbers.router, prefix="/backend")
 
 
 @app.get("/health")
