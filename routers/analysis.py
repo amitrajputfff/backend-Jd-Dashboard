@@ -20,9 +20,9 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 try:
-    from ..mongo import get_transcripts_col, get_assistants_col
+    from ..mongo import get_transcripts_col, get_assistants_col, get_analysis_prompts_col
 except ImportError:
-    from mongo import get_transcripts_col, get_assistants_col
+    from mongo import get_transcripts_col, get_assistants_col, get_analysis_prompts_col
 
 router = APIRouter()
 
@@ -185,35 +185,174 @@ async def rerun_analysis(call_id: str, body: RerunRequest = RerunRequest()):
 
 
 # ---------------------------------------------------------------------------
-# 4. Read / update assistant's analysis_prompt
+# 4. Analysis Prompts — standalone collection, not tied to any assistant
+#    Future: a separate mapping table will link assistant_id → prompt_id.
 # ---------------------------------------------------------------------------
 
-@router.get("/api/analysis/prompt/{assistant_id}")
-async def get_analysis_prompt(assistant_id: str):
-    col = get_assistants_col()
-    doc = await col.find_one({"assistant_id": assistant_id}, {"analysis_prompt": 1, "name": 1})
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Assistant not found")
+import uuid as _uuid
+
+
+def _prompt_doc_out(doc: dict) -> dict:
+    """Shape a prompt document for API responses."""
     return {
-        "assistant_id": assistant_id,
+        "prompt_id": doc.get("prompt_id", str(doc["_id"])),
         "name": doc.get("name", ""),
-        "analysis_prompt": doc.get("analysis_prompt") or "",
+        "description": doc.get("description", ""),
+        "analysis_prompt": doc.get("analysis_prompt", ""),
+        "is_default": doc.get("is_default", False),
+        "created_at": doc.get("created_at", ""),
+        "updated_at": doc.get("updated_at", ""),
     }
 
 
+async def _get_default_prompt_doc() -> Optional[dict]:
+    """Return the default prompt doc, falling back to the first one."""
+    col = get_analysis_prompts_col()
+    doc = await col.find_one({"is_default": True})
+    if doc is None:
+        doc = await col.find_one({}, sort=[("created_at", 1)])
+    return doc
+
+
+# --- List all prompts ---
+
+@router.get("/api/analysis/prompts")
+async def list_analysis_prompts():
+    col = get_analysis_prompts_col()
+    cursor = col.find({}, {"analysis_prompt": 0}).sort("created_at", 1)
+    docs = await cursor.to_list(length=100)
+    return [_prompt_doc_out({**d, "analysis_prompt": ""}) for d in docs]
+
+
+# --- Get default prompt (must be registered before /{prompt_id}) ---
+
+@router.get("/api/analysis/prompts/default")
+async def get_default_analysis_prompt():
+    doc = await _get_default_prompt_doc()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="No analysis prompts found — run the seeder")
+    return _prompt_doc_out(doc)
+
+
+# --- Get specific prompt ---
+
+@router.get("/api/analysis/prompts/{prompt_id}")
+async def get_analysis_prompt_by_id(prompt_id: str):
+    col = get_analysis_prompts_col()
+    doc = await col.find_one({"prompt_id": prompt_id})
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"Prompt {prompt_id!r} not found")
+    return _prompt_doc_out(doc)
+
+
+# --- Create prompt ---
+
+class CreatePromptRequest(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    analysis_prompt: str
+    is_default: bool = False
+
+
+@router.post("/api/analysis/prompts", status_code=201)
+async def create_analysis_prompt(body: CreatePromptRequest):
+    col = get_analysis_prompts_col()
+    now = datetime.now(timezone.utc)
+    # If marked as default, unset other defaults
+    if body.is_default:
+        await col.update_many({"is_default": True}, {"$set": {"is_default": False}})
+    new_id = str(_uuid.uuid4())
+    doc = {
+        "prompt_id": new_id,
+        "name": body.name,
+        "description": body.description or "",
+        "analysis_prompt": body.analysis_prompt,
+        "is_default": body.is_default,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await col.insert_one(doc)
+    return _prompt_doc_out(doc)
+
+
+# --- Update prompt ---
+
 class UpdatePromptRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    analysis_prompt: Optional[str] = None
+    is_default: Optional[bool] = None
+
+
+@router.put("/api/analysis/prompts/{prompt_id}")
+async def update_analysis_prompt_by_id(prompt_id: str, body: UpdatePromptRequest):
+    col = get_analysis_prompts_col()
+    update: dict = {"updated_at": datetime.now(timezone.utc)}
+    if body.name is not None:
+        update["name"] = body.name
+    if body.description is not None:
+        update["description"] = body.description
+    if body.analysis_prompt is not None:
+        update["analysis_prompt"] = body.analysis_prompt
+    if body.is_default is True:
+        # Unset other defaults first
+        await col.update_many({"is_default": True}, {"$set": {"is_default": False}})
+        update["is_default"] = True
+    elif body.is_default is False:
+        update["is_default"] = False
+
+    result = await col.update_one({"prompt_id": prompt_id}, {"$set": update})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail=f"Prompt {prompt_id!r} not found")
+    doc = await col.find_one({"prompt_id": prompt_id})
+    return _prompt_doc_out(doc)
+
+
+# --- Delete prompt ---
+
+@router.delete("/api/analysis/prompts/{prompt_id}", status_code=204)
+async def delete_analysis_prompt(prompt_id: str):
+    col = get_analysis_prompts_col()
+    result = await col.delete_one({"prompt_id": prompt_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail=f"Prompt {prompt_id!r} not found")
+
+
+# ---------------------------------------------------------------------------
+# 4b. Legacy compat shims — /api/analysis/prompt/{assistant_id}
+#     These keep old callers working by reading/writing the default prompt.
+#     Once the frontend is fully migrated they can be removed.
+# ---------------------------------------------------------------------------
+
+@router.get("/api/analysis/prompt/{assistant_id}")
+async def get_analysis_prompt_compat(assistant_id: str):
+    """Compat: returns the default analysis prompt (assistant_id ignored)."""
+    doc = await _get_default_prompt_doc()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="No analysis prompts found — run the seeder")
+    return {
+        "assistant_id": assistant_id,
+        "prompt_id": doc.get("prompt_id"),
+        "name": doc.get("name", ""),
+        "analysis_prompt": doc.get("analysis_prompt", ""),
+    }
+
+
+class _LegacyUpdatePromptRequest(BaseModel):
     analysis_prompt: str
 
 
 @router.put("/api/analysis/prompt/{assistant_id}")
-async def update_analysis_prompt(assistant_id: str, body: UpdatePromptRequest):
-    col = get_assistants_col()
-    result = await col.update_one(
-        {"assistant_id": assistant_id},
+async def update_analysis_prompt_compat(assistant_id: str, body: _LegacyUpdatePromptRequest):
+    """Compat: updates the default analysis prompt (assistant_id ignored)."""
+    doc = await _get_default_prompt_doc()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="No analysis prompts found — run the seeder")
+    col = get_analysis_prompts_col()
+    await col.update_one(
+        {"prompt_id": doc["prompt_id"]},
         {"$set": {"analysis_prompt": body.analysis_prompt, "updated_at": datetime.now(timezone.utc)}},
     )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Assistant not found")
     return {"assistant_id": assistant_id, "analysis_prompt": body.analysis_prompt}
 
 

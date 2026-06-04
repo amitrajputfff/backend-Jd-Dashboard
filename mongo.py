@@ -39,6 +39,13 @@ def get_counters_col():
     return _get_client()["no_code_platform"]["counters"]
 
 
+def get_analysis_prompts_col():
+    """Standalone analysis prompts — independent of any specific assistant.
+    Future: an assistant_prompt_map collection will link assistants → prompt_id.
+    """
+    return _get_client()["no_code_platform"]["analysis_prompts"]
+
+
 # ── ai_lead_qualify — call transcripts + analysis ────────────────────────────
 
 def get_transcripts_col():
