@@ -39,10 +39,10 @@ class Assistant(Base):
     call_end_text = Column(Text, default="")
 
     # API URLs used by the bot (editable per-agent)
-    mis_api_base = Column(String(500), default="http://192.168.14.101:3006")
+    mis_api_base = Column(String(500), default="http://192.168.8.67:8000")
     callback_api_url = Column(
         String(500),
-        default="http://192.168.14.101:3006/leads/ai-lead-qualify/callback",
+        default="http://192.168.8.67:8000/leads/ai-lead-qualify/callback",
     )
     category_change_api = Column(
         String(500),

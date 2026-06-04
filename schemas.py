@@ -44,9 +44,9 @@ class CreateAssistantRequest(BaseModel):
     functions: Optional[List[Any]] = Field(default_factory=list)
 
     # Bot API URLs
-    mis_api_base: Optional[str] = "http://192.168.14.101:3006"
+    mis_api_base: Optional[str] = "http://192.168.8.67:8000"
     callback_api_url: Optional[str] = (
-        "http://192.168.14.101:3006/leads/ai-lead-qualify/callback"
+        "http://192.168.8.67:8000/leads/ai-lead-qualify/callback"
     )
     category_change_api: Optional[str] = (
         "http://192.168.20.105:1080/services/abd/abd_beta.php"

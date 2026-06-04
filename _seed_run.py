@@ -19,7 +19,7 @@ col.create_index("assistant_id", unique=True)
 
 now = datetime.now(timezone.utc)
 FUNCS = [
-    {"name":"FetchLead","description":"Fetch lead from MIS","url":"http://192.168.14.101:3006/leads/ai-lead-qualify/mis","method":"GET","headers":{},"query_params":{"lead_id":"","mobile":"","page":"1","limit":"1","ai_partner":"inh-suny-bot"},"body_format":"json","custom_body":"","schema":{}},
+    {"name":"FetchLead","description":"Fetch lead from MIS","url":"http://192.168.8.67:8000/leads/ai-lead-qualify/mis","method":"GET","headers":{},"query_params":{"lead_id":"","mobile":"","page":"1","limit":"1","ai_partner":"inh-suny-bot"},"body_format":"json","custom_body":"","schema":{}},
     {"name":"FetchCategorySchema","description":"Fetch schema for product change","url":"http://192.168.8.67:8000/leads/ai-lead-qualify/search","method":"GET","headers":{},"query_params":{"lead_id":"","search_term":""},"body_format":"json","custom_body":"","schema":{"type":"object","properties":{"srchterm":{"type":"string"}},"required":["srchterm"]}},
 ]
 fields = {
@@ -27,7 +27,7 @@ fields = {
     "initial_message": "हेलो, मैं Simran बोल रही हूँ Justdial से — आपको {product} की requirement है ना?",
     "call_end_text": "ठीक है जी, सारी details मिल गईं. जल्द ही relevant sellers आपसे contact करेंगे. आपका समय देने के लिए शुक्रिया.",
     "mis_api_base": "http://192.168.8.67:8000",
-    "callback_api_url": "http://192.168.14.101:3006/leads/ai-lead-qualify/callback",
+    "callback_api_url": "http://192.168.8.67:8000/leads/ai-lead-qualify/callback",
     "category_change_api": "http://192.168.8.67:8000/leads/ai-lead-qualify/search",
     "script_rule": "By default write in Hindi Devanagari. Natural Hinglish encouraged.",
     "opening_instruction": "",

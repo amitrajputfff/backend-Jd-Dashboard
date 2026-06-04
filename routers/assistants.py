@@ -118,8 +118,8 @@ def _new_doc(data: CreateAssistantRequest, aid: int) -> dict:
         "prompt": data.prompt or "",
         "initial_message": data.initial_message or "",
         "call_end_text": data.call_end_text or "",
-        "mis_api_base": data.mis_api_base or "http://192.168.14.101:3006",
-        "callback_api_url": data.callback_api_url or "http://192.168.14.101:3006/leads/ai-lead-qualify/callback",
+        "mis_api_base": data.mis_api_base or "http://192.168.8.67:8000",
+        "callback_api_url": data.callback_api_url or "http://192.168.8.67:8000/leads/ai-lead-qualify/callback",
         "category_change_api": data.category_change_api or "http://192.168.20.105:1080/services/abd/abd_beta.php",
         "script_rule": data.script_rule or "",
         "opening_instruction": data.opening_instruction or "",
@@ -329,8 +329,8 @@ async def get_bot_config(assistant_id: str):
         function_calling=bool(doc.get("function_calling", False)),
         functions=doc.get("functions", []),
         api_urls={
-            "mis_api_base": doc.get("mis_api_base", "http://192.168.14.101:3006"),
-            "callback_api_url": doc.get("callback_api_url", "http://192.168.14.101:3006/leads/ai-lead-qualify/callback"),
+            "mis_api_base": doc.get("mis_api_base", "http://192.168.8.67:8000"),
+            "callback_api_url": doc.get("callback_api_url", "http://192.168.8.67:8000/leads/ai-lead-qualify/callback"),
             "category_change_api": doc.get("category_change_api", "http://192.168.20.105:1080/services/abd/abd_beta.php"),
         },
         prompt_config={

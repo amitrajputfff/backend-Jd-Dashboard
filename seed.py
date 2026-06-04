@@ -62,7 +62,7 @@ SIMRAN_FUNCTIONS = [
     {
         "name": "FetchLead",
         "description": "Fetch customer lead details from Justdial MIS API at call start.",
-        "url": "http://192.168.14.101:3006/leads/ai-lead-qualify/mis",
+        "url": "http://192.168.8.67:8000/leads/ai-lead-qualify/mis",
         "method": "GET",
         "headers": {},
         "query_params": {"lead_id": "", "mobile": "", "page": "1", "limit": "1", "ai_partner": "inh-suny-bot"},
@@ -103,7 +103,7 @@ def _simran_doc(aid: int, prompt: str) -> dict:
         "initial_message": "हेलो, मैं Simran बोल रही हूँ Justdial से — आपको {product} की requirement है ना?",
         "call_end_text": "ठीक है जी, सारी details मिल गईं. जल्द ही relevant sellers आपसे contact करेंगे. आपका समय देने के लिए शुक्रिया.",
         "mis_api_base": "http://192.168.8.67:8000",
-        "callback_api_url": "http://192.168.14.101:3006/leads/ai-lead-qualify/callback",
+        "callback_api_url": "http://192.168.8.67:8000/leads/ai-lead-qualify/callback",
         "category_change_api": "http://192.168.8.67:8000/leads/ai-lead-qualify/search",
         "script_rule": (
             "By default, write in Hindi (Devanagari) script.\n"

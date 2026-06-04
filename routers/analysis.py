@@ -11,9 +11,7 @@ Endpoints:
 
 from __future__ import annotations
 
-import json as _json
 import os
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -25,9 +23,6 @@ try:
     from ..mongo import get_transcripts_col, get_assistants_col
 except ImportError:
     from mongo import get_transcripts_col, get_assistants_col
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "gemini-2.0-flash-lite")
 
 router = APIRouter()
 
@@ -172,111 +167,21 @@ async def rerun_analysis(call_id: str, body: RerunRequest = RerunRequest()):
     if doc is None:
         raise HTTPException(status_code=404, detail=f"Call {call_id!r} not found")
 
-    # Build transcript text
-    transcripts = doc.get("transcript") or []
-    muted = doc.get("muted_transcript") or []
-    lines = "\n".join(
-        f"{t.get('role', '?').upper()}: {t.get('text', '')}"
-        for t in transcripts
-        if t.get("text")
-    )
-    muted_lines = "\n".join(
-        f"[MUTED USER]: {m}" for m in muted if isinstance(m, str) and m.strip()
-    )
-
-    if not lines:
-        raise HTTPException(status_code=422, detail="No transcript text to analyse")
-
-    # Resolve the analysis prompt
-    prompt_text = body.analysis_prompt_override or ""
-
-    if not prompt_text:
-        # Try to load from assistant's stored analysis_prompt
-        assistant_id = doc.get("assistant_id")
-        if assistant_id:
-            a_col = get_assistants_col()
-            agent = await a_col.find_one({"assistant_id": assistant_id}, {"analysis_prompt": 1})
-            if agent:
-                prompt_text = agent.get("analysis_prompt") or ""
-
-    if prompt_text.strip():
-        prompt = (
-            prompt_text
-            .replace("{transcript}", lines)
-            .replace("{muted_transcript}", muted_lines or "")
-        )
-    else:
-        # Compact default
-        prompt = f"""You are a call-analysis engine for JustDial AI outbound qualification calls.
-Analyse the transcript and return a JSON object with keys:
-  call_outcome (string), call_outcome_description (string), call_summary (string),
-  product_confirmed (bool), lead_intent_score (int 1-5), is_business (bool).
-
-TRANSCRIPT:
-{lines}
-{muted_lines}
-
-Return only valid JSON, no markdown."""
-
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=503, detail="GEMINI_API_KEY not configured")
-
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{ANALYSIS_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    )
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
-    }
-
-    import asyncio
-
-    def _call_gemini():
-        req = urllib.request.Request(
-            url,
-            data=_json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return _json.loads(r.read().decode())
-
-    try:
-        raw = await asyncio.get_event_loop().run_in_executor(None, _call_gemini)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Gemini request failed: {e}")
-
-    try:
-        text_out = raw["candidates"][0]["content"]["parts"][0]["text"]
-        result = _json.loads(text_out)
-    except Exception:
-        raise HTTPException(status_code=502, detail="Could not parse Gemini response")
-
     now = datetime.now(timezone.utc)
-    analysis_update = {
-        "call_outcome": result.get("call_outcome", ""),
-        "call_outcome_description": result.get("call_outcome_description", ""),
-        "call_summary": result.get("call_summary", ""),
-        "product_confirmed": result.get("product_confirmed", False),
-        "lead_intent_score": result.get("lead_intent_score"),
-        "is_business": result.get("is_business", False),
-        "qna": result.get("qna", []),
-        "product_change": result.get("product_change"),
-        "urgency_flag": result.get("urgency_flag", False),
-        "rerun_at": now.isoformat(),
-    }
-
     await col.update_one(
         {"_id": doc["_id"]},
-        {"$set": {
-            "analysis": analysis_update,
-            "tagged": True,
-            "tagged_at": now.isoformat(),
-        }},
+        {
+            "$set": {
+                "tagged": False,
+                "rerun": True,
+                "rerun_requested_at": now.isoformat(),
+            },
+            "$unset": {"tagged_at": ""},
+        },
     )
 
-    return {"analysis": analysis_update, "raw": result}
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=202, content={"status": "queued", "call_id": call_id})
 
 
 # ---------------------------------------------------------------------------

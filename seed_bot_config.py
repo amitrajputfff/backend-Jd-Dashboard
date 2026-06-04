@@ -154,7 +154,7 @@ FUNCTIONS = [
     {
         "name": "FetchLead",
         "description": "Fetch customer lead details from Justdial MIS API at call start. Pass lead_id OR mobile — not both.",
-        "url": "http://192.168.14.101:3006/leads/ai-lead-qualify/mis",
+        "url": "http://192.168.8.67:8000/leads/ai-lead-qualify/mis",
         "method": "GET",
         "headers": {},
         "query_params": {
@@ -194,37 +194,19 @@ FUNCTIONS = [
     },
 ]
 
-# The rich analysis prompt stored in the assistant so it can be edited from the dashboard.
-# Uses {transcript} and {muted_transcript} as runtime substitution tokens.
-ANALYSIS_PROMPT = """You are a strict call-analysis engine for JustDial's AI outbound qualification calls. Return accurate structured JSON — no guessing, no approximating.
-
-TRANSCRIPT:
-{transcript}
-
-{muted_transcript}
-
-Analyse the call and return a JSON object with exactly these keys:
-  call_outcome            — one of: Interested, Not Interested, Callback, Wrong Number, No Answer, Short Hangup, Could Not Confirm, Will do it Myself, Already Purchased, Duplicate
-  call_outcome_description — 1-2 sentence explanation of why this outcome was chosen
-  call_summary            — 2-3 sentence factual summary of what happened in the call
-  product_confirmed       — true/false: did the buyer confirm they still need the product?
-  qna                     — list of {question, answer} objects for each qualification question answered
-  is_business             — true/false: is the buyer a business/commercial buyer?
-  product_change          — string or null: if buyer changed product mid-call, the new product name; else null
-  lead_intent_score       — integer 1-5 (5 = very high intent)
-  urgency_flag            — true/false: did the buyer express urgency or immediate need?
-
-CLASSIFICATION RULES:
-- Interested: buyer confirmed product need AND answered ≥1 qualification question with a concrete answer
-- Not Interested: explicit, final rejection of the product requirement
-- Callback: buyer asked to be called back at a specific time
-- Short Hangup: call ended in <15 seconds with no meaningful engagement
-- Could Not Confirm: clear technical/situational reason confirmation couldn't happen (hold, IVR, handoff)
-- Will do it Myself: buyer has the requirement but explicitly said they'll source it themselves
-- Already Purchased: buyer already bought the product
-- Wrong Number: clearly wrong person / not the one who searched
-
-Return only valid JSON, no markdown, no extra text."""
+# Import the canonical analysis prompt from the worker package.
+# The prompt contains all GP-1…GP-8 global principles, Tier 1-4 evaluation rules,
+# extraction steps, and the full output schema — identical to what analysis.py uses at
+# runtime. Runtime placeholders: {transcript}, {muted_transcript},
+# {qualification_questions}, {disposition_options}, {current_datetime},
+# {dynamic_notes}, {num_questions}, {agent_inference_section}.
+import sys as _sys
+import os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), '..', 'voicebot_nodcode_platform'))
+try:
+    from callback_worker.canonical_prompt import CANONICAL_ANALYSIS_PROMPT as ANALYSIS_PROMPT
+except ImportError:
+    ANALYSIS_PROMPT = ""  # fallback — run from the repo root to pick up the worker package
 
 SEED_FIELDS = {
     "prompt": SYSTEM_PROMPT,
