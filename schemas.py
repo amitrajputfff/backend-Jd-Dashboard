@@ -347,7 +347,7 @@ class WorkflowVariableSchema(BaseModel):
 
 class WorkflowNodeData(BaseModel):
     """Generic node.data container; extra fields allowed (ReactFlow native)."""
-    kind: Literal["start", "conversation", "function", "end_call", "global"]
+    kind: Literal["start", "conversation", "condition", "function", "end_call", "global"]
     label: str = ""
     # start
     first_message: Optional[str] = None
@@ -389,11 +389,12 @@ class WorkflowRuleCondition(BaseModel):
 
 
 class WorkflowEdgeData(BaseModel):
-    kind: Literal["llm", "rule"]
-    # LLM edge
+    # kind is optional — new schema uses transition/branch handles; legacy uses llm/rule
+    kind: Optional[Literal["llm", "rule", "transition"]] = None
+    # LLM / transition edge
     condition: Optional[str] = None
     key: Optional[str] = None
-    # Rule edge
+    # Rule edge (condition nodes)
     rule: Optional[WorkflowRuleCondition] = None
     priority: Optional[int] = 0
     is_fallback: Optional[bool] = False
@@ -439,21 +440,18 @@ class Workflow(BaseModel):
             if edge.target not in node_ids:
                 raise ValueError(f"Edge {edge.id!r}: target {edge.target!r} does not exist")
 
-        # 3. LLM edges need a non-empty condition and unique key per source
+        # 3. Legacy LLM edge key uniqueness (new schema uses node-level transitions; skip those)
         llm_keys_by_source: Dict[str, set] = {}
         for edge in self.edges:
             if edge.data and edge.data.kind == "llm":
-                if not edge.data.condition:
-                    raise ValueError(f"Edge {edge.id!r}: LLM edge must have a non-empty condition")
                 src = edge.source
                 key = edge.data.key or ""
-                if not key:
-                    raise ValueError(f"Edge {edge.id!r}: LLM edge must have a non-empty key")
-                if src not in llm_keys_by_source:
-                    llm_keys_by_source[src] = set()
-                if key in llm_keys_by_source[src]:
-                    raise ValueError(f"Edge {edge.id!r}: duplicate LLM edge key {key!r} from node {src!r}")
-                llm_keys_by_source[src].add(key)
+                if key:
+                    if src not in llm_keys_by_source:
+                        llm_keys_by_source[src] = set()
+                    if key in llm_keys_by_source[src]:
+                        raise ValueError(f"Edge {edge.id!r}: duplicate LLM edge key {key!r} from node {src!r}")
+                    llm_keys_by_source[src].add(key)
 
         # 4. Function nodes must have a URL in their function config
         for node in self.nodes:
@@ -474,6 +472,7 @@ class CreateWorkflowBotRequest(BaseModel):
     name: str
     description: Optional[str] = ""
     status: Optional[str] = "Draft"
+    global_prompt: Optional[str] = ""
     workflow: Workflow
 
     # Voice / call settings — same field names as CreateAssistantRequest
@@ -507,6 +506,7 @@ class UpdateWorkflowBotRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
+    global_prompt: Optional[str] = None
     workflow: Optional[Workflow] = None
     language: Optional[str] = None
     temperature: Optional[float] = None
@@ -541,6 +541,7 @@ class WorkflowBotResponse(BaseModel):
     name: str
     description: str
     status: str
+    global_prompt: str
     workflow: Dict[str, Any]      # raw graph — ReactFlow JSON
     # Voice / call settings
     language: str
@@ -588,6 +589,8 @@ class WorkflowBotConfig(BaseModel):
     bot_type: str = "workflow"
     workflow_bot_id: str
     organization_id: str
+    # Global system prompt (Gemini system_instruction base)
+    global_prompt: str = ""
     # The graph
     workflow: Dict[str, Any]
     # Voice / behaviour settings
