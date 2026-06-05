@@ -14,11 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()  # load backend/.env before any module reads os.environ
 
 try:
-    from .routers import assistants, call_logs, analysis, phone_numbers
-    from .mongo import get_assistants_col
+    from .routers import assistants, call_logs, analysis, phone_numbers, workflow_bots
+    from .mongo import get_assistants_col, get_workflow_bots_col
 except ImportError:
-    from routers import assistants, call_logs, analysis, phone_numbers
-    from mongo import get_assistants_col
+    from routers import assistants, call_logs, analysis, phone_numbers, workflow_bots
+    from mongo import get_assistants_col, get_workflow_bots_col
 
 
 @asynccontextmanager
@@ -28,6 +28,12 @@ async def lifespan(app: FastAPI):
     await col.create_index("assistant_id", unique=True)
     await col.create_index("organization_id")
     await col.create_index([("organization_id", 1), ("is_deleted", 1)])
+
+    # Workflow bots indexes
+    wb_col = get_workflow_bots_col()
+    await wb_col.create_index("workflow_bot_id", unique=True)
+    await wb_col.create_index("organization_id")
+    await wb_col.create_index([("organization_id", 1), ("is_deleted", 1)])
     yield
 
 
@@ -52,6 +58,7 @@ app.include_router(assistants.router, prefix="/backend")
 app.include_router(call_logs.router, prefix="/backend")
 app.include_router(analysis.router, prefix="/backend")
 app.include_router(phone_numbers.router, prefix="/backend")
+app.include_router(workflow_bots.router, prefix="/backend")
 
 
 @app.get("/health")

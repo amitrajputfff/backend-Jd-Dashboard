@@ -46,6 +46,13 @@ def get_analysis_prompts_col():
     return _get_client()["no_code_platform"]["analysis_prompts"]
 
 
+# ── no_code_platform — workflow bots ────────────────────────────────────────
+
+def get_workflow_bots_col():
+    """Visual workflow bot configs — separate from plain assistants."""
+    return _get_client()["no_code_platform"]["workflow_bots"]
+
+
 # ── ai_lead_qualify — call transcripts + analysis ────────────────────────────
 
 def get_transcripts_col():
