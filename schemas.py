@@ -94,6 +94,9 @@ class CreateAssistantRequest(BaseModel):
     # Language notes (appended to system prompt — tone, style, filler rules)
     lang_notes: Optional[str] = ""
 
+    # Lock flag — locked assistants are live in production and cannot be edited
+    is_locked: Optional[bool] = False
+
     # Accepted but ignored — AI-create flow extras
     language_id: Optional[int] = None
     stt_model_id: Optional[int] = None
@@ -162,6 +165,9 @@ class UpdateAssistantRequest(BaseModel):
     # Language notes
     lang_notes: Optional[str] = None
 
+    # Lock flag — only admins should flip this
+    is_locked: Optional[bool] = None
+
 
 # ---------------------------------------------------------------------------
 # Response — matches AssistantDetails TypeScript interface
@@ -202,6 +208,9 @@ class AssistantResponse(BaseModel):
     is_deleted: bool
     deleted_until: Optional[str]
     is_active: bool
+
+    # Lock — True means live in production; edits and deletes are rejected
+    is_locked: bool = False
 
     # Timestamps
     created_at: str

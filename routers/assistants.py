@@ -66,6 +66,7 @@ def _doc_to_response(doc: dict) -> AssistantResponse:
         is_deleted=bool(doc.get("is_deleted", False)),
         deleted_until=doc.get("deleted_until"),
         is_active=bool(doc.get("is_active", True)),
+        is_locked=bool(doc.get("is_locked", False)),
         created_at=_fmt_dt(doc.get("created_at")),
         updated_at=_fmt_dt(doc.get("updated_at")),
         calls_today=doc.get("calls_today", 0),
@@ -151,6 +152,7 @@ def _new_doc(data: CreateAssistantRequest, aid: int) -> dict:
         "inactivity_phrase": data.inactivity_phrase or "क्या आप अभी line पर हैं?",
         "inactivity_end_phrase": data.inactivity_end_phrase or "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद.",
         "lang_notes": data.lang_notes or "",
+        "is_locked": bool(getattr(data, "is_locked", False) or False),
         "is_deleted": False,
         "is_active": True,
         "calls_today": 0,
@@ -234,7 +236,12 @@ async def get_assistant(assistant_id: str):
 @router.put("/api/assistants/{assistant_id}", response_model=AssistantResponse)
 async def update_assistant(assistant_id: str, data: UpdateAssistantRequest):
     col = get_assistants_col()
-    await _get_or_404(assistant_id)
+    doc = await _get_or_404(assistant_id)
+    if doc.get("is_locked") and data.is_locked is None:
+        raise HTTPException(
+            status_code=403,
+            detail="This assistant is live in production and is locked from modifications.",
+        )
     updates = {k: v for k, v in data.model_dump(exclude_none=True).items()}
     updates["updated_at"] = datetime.now(timezone.utc)
     await col.update_one({"assistant_id": assistant_id}, {"$set": updates})
@@ -249,7 +256,12 @@ async def update_assistant(assistant_id: str, data: UpdateAssistantRequest):
 @router.delete("/api/assistants/{assistant_id}")
 async def delete_assistant(assistant_id: str):
     col = get_assistants_col()
-    await _get_or_404(assistant_id)
+    doc = await _get_or_404(assistant_id)
+    if doc.get("is_locked"):
+        raise HTTPException(
+            status_code=403,
+            detail="This assistant is live in production and is locked from modifications.",
+        )
     now = datetime.now(timezone.utc)
     await col.update_one(
         {"assistant_id": assistant_id},
