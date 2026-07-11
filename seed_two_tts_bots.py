@@ -2,23 +2,28 @@
 """Seed two test bots into MongoDB no_code_platform.assistants:
 
   1. "Dev — Sarvam TTS"  — Sarvam STT + Sarvam bulbul:v3 "simran" TTS,
-     pointed at DEV MIS/callback/category APIs and (optionally) a dev Mongo.
+     pointed at DEV MIS/callback/category APIs, writing call data to the
+     ai_lead_qualify_dev database.
   2. "Live — Own TTS"    — Sarvam STT + our own IndicF5 "simran" TTS,
-     pointed at LIVE/prod MIS/callback/category APIs and the prod Mongo.
+     pointed at LIVE/prod MIS/callback/category APIs, writing call data to
+     the ai_lead_qualify database.
 
 Both bots get the SAME prompt/behavior settings — cloned from the existing
 live LQ bot (assistant_id ...988c4, "Simran") as the base, differing only in:
 name, tags, TTS voice_id/tts_provider_id/tts_model_id, mis_api_base/
-callback_api_url/category_change_api, mongo_uri, organization_id, is_locked.
+callback_api_url/category_change_api, mongo_uri/mongo_db, organization_id,
+is_locked.
 
-Everything environment-specific is env-driven — no hardcoded guessed hosts
-for values this script can't know (e.g. a real separate dev Mongo). Where an
-env var isn't set, dev values default to the same dev-MIS host already used
-elsewhere in this codebase (bot_dev.py/seed_dev_bot.py:
-http://192.168.14.101:3006) and live values default to the existing
-production MIS host (http://192.168.8.67:8000) / Mongo
-(mongodb://192.168.13.65:27017) — override any of these via env if your
-actual dev/live infra differs.
+mongo_uri/mongo_db are set as plain literals below, NOT read from env — these
+are fixed, visible-at-a-glance facts about where each bot's call data lands
+(dev bot -> ai_lead_qualify_dev, live bot -> ai_lead_qualify, both on the same
+Mongo server — confirmed against the real dev bot_dev.py worker's own .env),
+not something that should vary by whoever/wherever runs this script. If your
+real dev/live Mongo setup differs, edit DEV_MONGO_URI/DEV_MONGO_DB/
+LIVE_MONGO_URI/LIVE_MONGO_DB below directly.
+
+The MIS/callback/category API hosts, by contrast, ARE env-overridable (see
+Usage) since those are more likely to differ by whoever is running the seed.
 
 Idempotent: re-running updates the existing docs in place (matched by name,
 since these are fresh test bots with no fixed UUID like the LQ/dev ones).
@@ -26,12 +31,10 @@ since these are fresh test bots with no fixed UUID like the LQ/dev ones).
 Usage:
     python seed_two_tts_bots.py [org_id]
 
-    # override any of these as needed:
+    # override the MIS/callback/category API hosts as needed:
     MONGODB_URL=mongodb://<host>:27017 \
     DEV_MIS_API_BASE=http://<dev-mis>:3006 \
-    DEV_MONGO_URI=mongodb://<dev-mongo>:27017 \
     LIVE_MIS_API_BASE=http://<live-mis>:8000 \
-    LIVE_MONGO_URI=mongodb://<live-mongo>:27017 \
         python seed_two_tts_bots.py my-org
 """
 import asyncio
@@ -53,9 +56,14 @@ LQ_UUID = "e8c0fd31-2d60-4531-a029-2047b17988c4"  # live LQ ("Simran") — promp
 DEV_MIS_API_BASE = os.getenv("DEV_MIS_API_BASE", "http://192.168.14.101:3006")
 DEV_CALLBACK_API_URL = os.getenv("DEV_CALLBACK_API_URL", f"{DEV_MIS_API_BASE}/leads/ai-lead-qualify/callback")
 DEV_CATEGORY_CHANGE_API = os.getenv("DEV_CATEGORY_CHANGE_API", f"{DEV_MIS_API_BASE}/leads/ai-lead-qualify/search")
-# No confirmed separate dev Mongo exists yet in this codebase — defaults to
-# the same Mongo as MONGODB_URL unless you set DEV_MONGO_URI explicitly.
-DEV_MONGO_URI = os.getenv("DEV_MONGO_URI", MONGO_URL)
+# Same Mongo server as live — dev/live are split by DATABASE NAME, not host
+# (confirmed against the real bot_dev.py dev worker's .env: MONGO_DB=
+# ai_lead_qualify_dev). Set explicitly here, not read from env — the whole
+# point of mongo_uri/mongo_db being per-bot fields is that they're fixed,
+# visible facts about each bot's data destination, not inherited from
+# whichever process happens to run it.
+DEV_MONGO_URI = "mongodb://192.168.13.65:27017"
+DEV_MONGO_DB = "ai_lead_qualify_dev"
 
 # ---------------------------------------------------------------------------
 # Live/prod environment
@@ -63,7 +71,8 @@ DEV_MONGO_URI = os.getenv("DEV_MONGO_URI", MONGO_URL)
 LIVE_MIS_API_BASE = os.getenv("LIVE_MIS_API_BASE", "http://192.168.8.67:8000")
 LIVE_CALLBACK_API_URL = os.getenv("LIVE_CALLBACK_API_URL", f"{LIVE_MIS_API_BASE}/leads/ai-lead-qualify/callback")
 LIVE_CATEGORY_CHANGE_API = os.getenv("LIVE_CATEGORY_CHANGE_API", "http://192.168.20.105:1080/services/abd/abd_beta.php")
-LIVE_MONGO_URI = os.getenv("LIVE_MONGO_URI", "mongodb://192.168.13.65:27017")
+LIVE_MONGO_URI = "mongodb://192.168.13.65:27017"
+LIVE_MONGO_DB = "ai_lead_qualify"
 
 # ---------------------------------------------------------------------------
 # Voice catalog ids (see backend/voice_catalog.py)
@@ -113,6 +122,7 @@ BOTS = [
         "callback_api_url": DEV_CALLBACK_API_URL,
         "category_change_api": DEV_CATEGORY_CHANGE_API,
         "mongo_uri": DEV_MONGO_URI,
+        "mongo_db": DEV_MONGO_DB,
     },
     {
         "name": "Simran — Live (Own TTS)",
@@ -123,6 +133,7 @@ BOTS = [
         "callback_api_url": LIVE_CALLBACK_API_URL,
         "category_change_api": LIVE_CATEGORY_CHANGE_API,
         "mongo_uri": LIVE_MONGO_URI,
+        "mongo_db": LIVE_MONGO_DB,
     },
 ]
 
@@ -170,6 +181,7 @@ async def main() -> None:
             "callback_api_url": spec["callback_api_url"],
             "category_change_api": spec["category_change_api"],
             "mongo_uri": spec["mongo_uri"],
+            "mongo_db": spec["mongo_db"],
             "tts_provider_id": spec["tts_provider_id"],
             "tts_model_id": spec["tts_model_id"],
             "voice_id": spec["voice_id"],
@@ -200,7 +212,7 @@ async def main() -> None:
     print("[seed] Verify:")
     async for doc in col.find(
         {"organization_id": ORG_ID, "name": {"$in": [b["name"] for b in BOTS]}},
-        {"name": 1, "assistant_id": 1, "voice_id": 1, "mis_api_base": 1, "mongo_uri": 1, "status": 1},
+        {"name": 1, "assistant_id": 1, "voice_id": 1, "mis_api_base": 1, "mongo_uri": 1, "mongo_db": 1, "status": 1},
     ):
         print(f"  {doc}")
 

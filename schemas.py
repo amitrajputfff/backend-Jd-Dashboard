@@ -61,9 +61,11 @@ class CreateAssistantRequest(BaseModel):
 
     # Per-assistant MongoDB override — lets one running bot_dev.py worker
     # persist different assistants' call transcripts to different MongoDB
-    # deployments (e.g. a dev bot -> dev Mongo, a live bot -> prod Mongo).
-    # None/empty means "use the worker's own MONGO_URI env default".
+    # deployments and/or database names (e.g. a dev bot -> dev Mongo /
+    # ai_lead_qualify_dev, a live bot -> prod Mongo / ai_lead_qualify).
+    # None/empty means "use the worker's own MONGO_URI/MONGO_DB env default".
     mongo_uri: Optional[str] = None
+    mongo_db: Optional[str] = None
 
     # Prompt config
     script_rule: Optional[str] = ""
@@ -144,6 +146,7 @@ class UpdateAssistantRequest(BaseModel):
     callback_api_url: Optional[str] = None
     category_change_api: Optional[str] = None
     mongo_uri: Optional[str] = None
+    mongo_db: Optional[str] = None
     script_rule: Optional[str] = None
     opening_instruction: Optional[str] = None
     closing_instruction: Optional[str] = None
@@ -217,8 +220,9 @@ class AssistantResponse(BaseModel):
     callback_api_url: str
     category_change_api: str
 
-    # Per-assistant MongoDB override (None = worker's own MONGO_URI env default)
+    # Per-assistant MongoDB override (None = worker's own MONGO_URI/MONGO_DB env defaults)
     mongo_uri: Optional[str] = None
+    mongo_db: Optional[str] = None
 
     # Prompt config
     script_rule: str
@@ -340,8 +344,9 @@ class BotConfig(BaseModel):
     api_urls: Dict[str, str]          # mis_api_base, callback_api_url, category_change_api
     prompt_config: Dict[str, str]     # script_rule, opening_instruction, closing_instruction, timeout_message
     # Per-assistant MongoDB override — see voicebot_nodcode_platform/bot.py's
-    # _get_mongo_collection(). None = worker's own MONGO_URI env default.
+    # _get_mongo_collection(). None = worker's own MONGO_URI/MONGO_DB env defaults.
     mongo_uri: Optional[str] = None
+    mongo_db: Optional[str] = None
     # Bot behaviour settings
     language: str
     temperature: float

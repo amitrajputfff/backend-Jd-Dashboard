@@ -66,6 +66,7 @@ def _doc_to_response(doc: dict) -> AssistantResponse:
         callback_api_url=doc.get("callback_api_url", ""),
         category_change_api=doc.get("category_change_api", ""),
         mongo_uri=doc.get("mongo_uri"),
+        mongo_db=doc.get("mongo_db"),
         script_rule=doc.get("script_rule", ""),
         opening_instruction=doc.get("opening_instruction", ""),
         closing_instruction=doc.get("closing_instruction", ""),
@@ -135,6 +136,7 @@ def _new_doc(data: CreateAssistantRequest, aid: int) -> dict:
         "callback_api_url": data.callback_api_url or _CALLBACK_API_URL_DEFAULT,
         "category_change_api": data.category_change_api or _CATEGORY_CHANGE_API_DEFAULT,
         "mongo_uri": data.mongo_uri or None,
+        "mongo_db": data.mongo_db or None,
         "script_rule": data.script_rule or "",
         "opening_instruction": data.opening_instruction or "",
         "closing_instruction": data.closing_instruction or "",
@@ -363,6 +365,7 @@ async def get_bot_config(assistant_id: str):
             "category_change_api": doc.get("category_change_api", _CATEGORY_CHANGE_API_DEFAULT),
         },
         mongo_uri=doc.get("mongo_uri"),
+        mongo_db=doc.get("mongo_db"),
         prompt_config={
             "script_rule": doc.get("script_rule", ""),
             "opening_instruction": doc.get("opening_instruction", ""),
