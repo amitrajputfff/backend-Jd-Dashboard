@@ -5,27 +5,45 @@ Idempotent: if the dev bot doc already exists it is updated in-place.
 Also sets is_locked=True on the live LQ bot (...988c4) and is_locked=False
 on the dev bot.
 
+Env-driven — set MONGODB_URL / MIS_API_BASE to seed against a different
+environment (e.g. a server deployment) instead of editing this file.
+
 Usage:
     python seed_dev_bot.py [org_id]
+    MONGODB_URL=mongodb://<server>:27017 MIS_API_BASE=http://<server>:3006 \
+        python seed_dev_bot.py my-org
 """
 import asyncio
+import os
 import sys
 from datetime import datetime, timezone
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
-MONGO_URL    = "mongodb://192.168.13.65:27017"
+try:
+    from voice_catalog import DEFAULT_VOICE_ID
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from voice_catalog import DEFAULT_VOICE_ID
+
+MONGO_URL    = os.getenv("MONGODB_URL", "mongodb://192.168.13.65:27017")
 DB_NAME      = "no_code_platform"
 ORG_ID       = sys.argv[1] if len(sys.argv) > 1 else "default-org"
+MIS_API_BASE = os.getenv("MIS_API_BASE", "http://192.168.14.101:3006")
 
 LQ_UUID  = "e8c0fd31-2d60-4531-a029-2047b17988c4"   # live LQ (Simran SIP) — must be locked
 DEV_UUID = "e8c0fd31-2d60-4531-a029-2047b17987c4"   # dev bot (WebRTC + SIP) — unlocked
+
+# TTS voice — defaults to DEFAULT_VOICE_ID (our own IndicF5 "simran"), matching
+# what bot_dev.py has always spoken. Set DEV_BOT_VOICE_ID to try a different
+# voice_id from backend/voice_catalog.py (e.g. 20 for Sarvam simran).
+DEV_BOT_VOICE_ID = int(os.getenv("DEV_BOT_VOICE_ID", str(DEFAULT_VOICE_ID)))
 
 DEV_FUNCTIONS = [
     {
         "name": "FetchLead",
         "description": "Fetch customer lead details from Justdial MIS API at call start.",
-        "url": "http://192.168.14.101:3006/leads/ai-lead-qualify/mis",
+        "url": f"{MIS_API_BASE}/leads/ai-lead-qualify/mis",
         "method": "GET",
         "headers": {},
         "query_params": {"lead_id": "", "mobile": "", "page": "1", "limit": "1", "ai_partner": "inh-suny-bot"},
@@ -36,7 +54,7 @@ DEV_FUNCTIONS = [
     {
         "name": "FetchCategorySchema",
         "description": "Fetches qualification schema when buyer changes product mid-call.",
-        "url": "http://192.168.14.101:3006/leads/ai-lead-qualify/search",
+        "url": f"{MIS_API_BASE}/leads/ai-lead-qualify/search",
         "method": "GET",
         "headers": {},
         "query_params": {"lead_id": "", "search_term": ""},
@@ -76,9 +94,10 @@ async def main() -> None:
         updates = {
             "is_locked": False,
             "status": existing.get("status", "Active"),
-            "mis_api_base": "http://192.168.14.101:3006",
-            "callback_api_url": "http://192.168.14.101:3006/leads/ai-lead-qualify/callback",
+            "mis_api_base": MIS_API_BASE,
+            "callback_api_url": f"{MIS_API_BASE}/leads/ai-lead-qualify/callback",
             "functions": DEV_FUNCTIONS,
+            "voice_id": existing.get("voice_id", DEV_BOT_VOICE_ID),
             "updated_at": now,
         }
         await col.update_one({"assistant_id": DEV_UUID}, {"$set": updates})
@@ -99,14 +118,16 @@ async def main() -> None:
             "assistant_id": DEV_UUID,
             "organization_id": ORG_ID,
             "name": "Simran — Dev (WebRTC + SIP)",
-            "description": "Dev/test bot. Same config as live LQ bot but points at dev MIS (192.168.14.101:3006) and dev MongoDB. Unlocked — editable from dashboard.",
+            "description": "Dev/test bot. Same config as live LQ bot but points at dev MIS "
+                           f"({MIS_API_BASE}) and dev MongoDB. Unlocked — editable from dashboard.",
             "category": "Customer Service",
             "tags": ["hindi", "justdial", "qualification", "dev", "webrtc", "simran"],
             "status": "Active",
-            "mis_api_base": "http://192.168.14.101:3006",
-            "callback_api_url": "http://192.168.14.101:3006/leads/ai-lead-qualify/callback",
+            "mis_api_base": MIS_API_BASE,
+            "callback_api_url": f"{MIS_API_BASE}/leads/ai-lead-qualify/callback",
             "functions": DEV_FUNCTIONS,
             "function_calling": True,
+            "voice_id": DEV_BOT_VOICE_ID,
             "is_locked": False,
             "is_deleted": False,
             "is_active": True,
@@ -115,14 +136,15 @@ async def main() -> None:
             "updated_at": now,
         }
         await col.insert_one(dev_doc)
-        print(f"[seed] ✅ Created dev bot: assistant_id={DEV_UUID}  id={new_id}")
+        print(f"[seed] ✅ Created dev bot: assistant_id={DEV_UUID}  id={new_id}  voice_id={DEV_BOT_VOICE_ID}")
 
     # 3. Verify
     for uid, label in [(LQ_UUID, "LQ (live)"), (DEV_UUID, "Dev")]:
-        doc = await col.find_one({"assistant_id": uid}, {"name": 1, "is_locked": 1, "status": 1})
+        doc = await col.find_one({"assistant_id": uid}, {"name": 1, "is_locked": 1, "status": 1, "voice_id": 1})
         print(f"[seed] Verify {label}: {doc}")
 
     client.close()
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

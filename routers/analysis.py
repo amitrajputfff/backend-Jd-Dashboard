@@ -7,6 +7,9 @@ Endpoints:
   GET  /api/analysis/prompt/{assistant_id}    — read assistant's analysis_prompt
   PUT  /api/analysis/prompt/{assistant_id}    — update assistant's analysis_prompt
   GET  /api/metrics/{assistant_id}            — real aggregated metrics from call_transcripts
+                                                 (assistant_id="all" — no assistant scoping)
+  GET  /api/dashboard/stats                   — org-wide rollup of the same metrics,
+                                                 scoped by organization_id, + activeAgents
 """
 
 from __future__ import annotations
@@ -365,11 +368,15 @@ OUTCOME_SUCCESS = {
 }
 
 
-@router.get("/api/metrics/{assistant_id}")
-async def get_metrics(
-    assistant_id: str,
-    range: str = Query("7d", description="Time range: 1d, 7d, 30d, 90d"),
-):
+async def _compute_call_metrics(assistant_filter: dict, range: str) -> dict:
+    """Core metrics aggregation over ai_lead_qualify.call_transcripts.
+
+    assistant_filter is merged into every query — pass {} for no assistant
+    scoping (org-wide), {"assistant_id": "x"} for a single assistant, or
+    {"assistant_id": {"$in": [...]}} for a set of assistants (an org's agents).
+    Shared by GET /api/metrics/{assistant_id} (single) and
+    GET /api/dashboard/stats (org-wide).
+    """
     col = get_transcripts_col()
 
     # Resolve date range
@@ -379,9 +386,7 @@ async def get_metrics(
     prev_since = since - timedelta(days=range_days)
 
     def _date_query(start: datetime, end: datetime) -> dict:
-        base: dict = {}
-        if assistant_id and assistant_id != "all":
-            base["assistant_id"] = assistant_id
+        base: dict = dict(assistant_filter)
         # call_start_time may be a datetime or ISO string
         base["$or"] = [
             {"call_start_time": {"$gte": start, "$lt": end}},
@@ -421,9 +426,7 @@ async def get_metrics(
     month_start = now - timedelta(days=30)
 
     def _period_query(start: datetime) -> dict:
-        base: dict = {}
-        if assistant_id and assistant_id != "all":
-            base["assistant_id"] = assistant_id
+        base: dict = dict(assistant_filter)
         base["$or"] = [
             {"call_start_time": {"$gte": start}},
             {"call_start_time": {"$gte": start.isoformat()}},
@@ -531,3 +534,56 @@ async def get_metrics(
             "outcomeBreakdown": outcome_breakdown,
         }
     }
+
+
+@router.get("/api/metrics/{assistant_id}")
+async def get_metrics(
+    assistant_id: str,
+    range: str = Query("7d", description="Time range: 1d, 7d, 30d, 90d"),
+):
+    assistant_filter = {} if (not assistant_id or assistant_id == "all") else {"assistant_id": assistant_id}
+    return await _compute_call_metrics(assistant_filter, range)
+
+
+# ---------------------------------------------------------------------------
+# 6. Org-wide dashboard stats — powers /dashboard/analytics + /dashboard/realtime
+# ---------------------------------------------------------------------------
+
+@router.get("/api/dashboard/stats")
+async def get_dashboard_stats(
+    organization_id: str = Query(...),
+    range: str = Query("7d", description="Time range: 1d, 7d, 30d, 90d"),
+):
+    """Org-wide rollup of the same call_transcripts metrics as /api/metrics/{id},
+    scoped to every assistant belonging to organization_id (instead of one
+    assistant), plus an activeAgents count. Powers the dashboard's top-level
+    analytics/realtime views.
+    """
+    a_col = get_assistants_col()
+    assistant_docs = await a_col.find(
+        {"organization_id": organization_id, "is_deleted": False},
+        {"assistant_id": 1, "status": 1},
+    ).to_list(length=10000)
+    assistant_ids = [d["assistant_id"] for d in assistant_docs if d.get("assistant_id")]
+    active_agents = sum(1 for d in assistant_docs if d.get("status") == "Active")
+
+    if not assistant_ids:
+        # No agents yet for this org — return an all-zero shape rather than
+        # querying call_transcripts unscoped (which would leak other orgs' data).
+        return {
+            "data": {
+                "overview": {
+                    "totalCalls": 0, "successfulCalls": 0, "failedCalls": 0,
+                    "successRate": 0, "avgCallDuration": 0,
+                    "callsToday": 0, "callsThisWeek": 0, "callsThisMonth": 0,
+                    "activeAgents": 0,
+                },
+                "comparison": {"totalCallsChange": 0, "successRateChange": 0, "avgDurationChange": 0, "periodLabel": f"vs previous {range}"},
+                "callTrends": [],
+                "outcomeBreakdown": {},
+            }
+        }
+
+    result = await _compute_call_metrics({"assistant_id": {"$in": assistant_ids}}, range)
+    result["data"]["overview"]["activeAgents"] = active_agents
+    return result

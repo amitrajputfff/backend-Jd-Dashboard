@@ -15,7 +15,11 @@ try:
         BotConfig,
         CreateAssistantRequest,
         UpdateAssistantRequest,
+        _CALLBACK_API_URL_DEFAULT,
+        _CATEGORY_CHANGE_API_DEFAULT,
+        _MIS_API_BASE_DEFAULT,
     )
+    from ..voice_catalog import DEFAULT_VOICE_ID, resolve_voice
 except ImportError:
     from mongo import get_assistants_col, next_sequence
     from schemas import (
@@ -24,7 +28,11 @@ except ImportError:
         BotConfig,
         CreateAssistantRequest,
         UpdateAssistantRequest,
+        _CALLBACK_API_URL_DEFAULT,
+        _CATEGORY_CHANGE_API_DEFAULT,
+        _MIS_API_BASE_DEFAULT,
     )
+    from voice_catalog import DEFAULT_VOICE_ID, resolve_voice
 
 router = APIRouter()
 
@@ -57,6 +65,7 @@ def _doc_to_response(doc: dict) -> AssistantResponse:
         mis_api_base=doc.get("mis_api_base", ""),
         callback_api_url=doc.get("callback_api_url", ""),
         category_change_api=doc.get("category_change_api", ""),
+        mongo_uri=doc.get("mongo_uri"),
         script_rule=doc.get("script_rule", ""),
         opening_instruction=doc.get("opening_instruction", ""),
         closing_instruction=doc.get("closing_instruction", ""),
@@ -70,6 +79,9 @@ def _doc_to_response(doc: dict) -> AssistantResponse:
         created_at=_fmt_dt(doc.get("created_at")),
         updated_at=_fmt_dt(doc.get("updated_at")),
         calls_today=doc.get("calls_today", 0),
+        tts_provider_id=doc.get("tts_provider_id", 3),
+        tts_model_id=doc.get("tts_model_id", 1),
+        voice_id=doc.get("voice_id", DEFAULT_VOICE_ID),
         language=doc.get("language", "hindi"),
         temperature=doc.get("temperature", 0.4),
         gemini_start_sensitivity=doc.get("gemini_start_sensitivity", "START_SENSITIVITY_LOW"),
@@ -119,9 +131,10 @@ def _new_doc(data: CreateAssistantRequest, aid: int) -> dict:
         "prompt": data.prompt or "",
         "initial_message": data.initial_message or "",
         "call_end_text": data.call_end_text or "",
-        "mis_api_base": data.mis_api_base or "http://192.168.8.67:8000",
-        "callback_api_url": data.callback_api_url or "http://192.168.8.67:8000/leads/ai-lead-qualify/callback",
-        "category_change_api": data.category_change_api or "http://192.168.20.105:1080/services/abd/abd_beta.php",
+        "mis_api_base": data.mis_api_base or _MIS_API_BASE_DEFAULT,
+        "callback_api_url": data.callback_api_url or _CALLBACK_API_URL_DEFAULT,
+        "category_change_api": data.category_change_api or _CATEGORY_CHANGE_API_DEFAULT,
+        "mongo_uri": data.mongo_uri or None,
         "script_rule": data.script_rule or "",
         "opening_instruction": data.opening_instruction or "",
         "closing_instruction": data.closing_instruction or "",
@@ -153,6 +166,9 @@ def _new_doc(data: CreateAssistantRequest, aid: int) -> dict:
         "inactivity_end_phrase": data.inactivity_end_phrase or "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद.",
         "lang_notes": data.lang_notes or "",
         "is_locked": bool(getattr(data, "is_locked", False) or False),
+        "tts_provider_id": data.tts_provider_id if data.tts_provider_id is not None else 3,
+        "tts_model_id": data.tts_model_id if data.tts_model_id is not None else 1,
+        "voice_id": data.voice_id if data.voice_id is not None else DEFAULT_VOICE_ID,
         "is_deleted": False,
         "is_active": True,
         "calls_today": 0,
@@ -332,6 +348,7 @@ async def clone_assistant(assistant_id: str, body: dict = None):
 @router.get("/api/assistants/{assistant_id}/bot-config", response_model=BotConfig)
 async def get_bot_config(assistant_id: str):
     doc = await _get_or_404(assistant_id)
+    _voice = resolve_voice(doc.get("voice_id"))
     return BotConfig(
         assistant_id=doc["assistant_id"],
         organization_id=doc.get("organization_id", ""),
@@ -341,10 +358,11 @@ async def get_bot_config(assistant_id: str):
         function_calling=bool(doc.get("function_calling", False)),
         functions=doc.get("functions", []),
         api_urls={
-            "mis_api_base": doc.get("mis_api_base", "http://192.168.8.67:8000"),
-            "callback_api_url": doc.get("callback_api_url", "http://192.168.8.67:8000/leads/ai-lead-qualify/callback"),
-            "category_change_api": doc.get("category_change_api", "http://192.168.20.105:1080/services/abd/abd_beta.php"),
+            "mis_api_base": doc.get("mis_api_base", _MIS_API_BASE_DEFAULT),
+            "callback_api_url": doc.get("callback_api_url", _CALLBACK_API_URL_DEFAULT),
+            "category_change_api": doc.get("category_change_api", _CATEGORY_CHANGE_API_DEFAULT),
         },
+        mongo_uri=doc.get("mongo_uri"),
         prompt_config={
             "script_rule": doc.get("script_rule", ""),
             "opening_instruction": doc.get("opening_instruction", ""),
@@ -360,6 +378,8 @@ async def get_bot_config(assistant_id: str):
         max_call_duration=doc.get("max_call_duration", 300),
         filler_message=doc.get("filler_message", []),
         function_filler_message=doc.get("function_filler_message", []),
+        tts_provider=_voice["provider"],
+        tts_voice=_voice["speaker"],
         sarvam_min_rms=doc.get("sarvam_min_rms", 600),
         sarvam_min_speech_ms=doc.get("sarvam_min_speech_ms", 500),
         sarvam_min_speech_ms_singleword=doc.get("sarvam_min_speech_ms_singleword", 800),

@@ -1,3 +1,4 @@
+import os
 import uuid
 from datetime import datetime, timedelta
 
@@ -12,6 +13,15 @@ except ImportError:
 
 def _new_uuid() -> str:
     return str(uuid.uuid4())
+
+
+_MIS_API_BASE_DEFAULT = os.getenv("MIS_API_BASE", "http://192.168.8.67:8000")
+_CALLBACK_API_URL_DEFAULT = os.getenv(
+    "CALLBACK_API_URL", "http://192.168.8.67:8000/leads/ai-lead-qualify/callback"
+)
+_CATEGORY_CHANGE_API_DEFAULT = os.getenv(
+    "CATEGORY_CHANGE_API", "http://192.168.20.105:1080/services/abd/abd_beta.php"
+)
 
 
 class Assistant(Base):
@@ -39,15 +49,9 @@ class Assistant(Base):
     call_end_text = Column(Text, default="")
 
     # API URLs used by the bot (editable per-agent)
-    mis_api_base = Column(String(500), default="http://192.168.8.67:8000")
-    callback_api_url = Column(
-        String(500),
-        default="http://192.168.8.67:8000/leads/ai-lead-qualify/callback",
-    )
-    category_change_api = Column(
-        String(500),
-        default="http://192.168.20.105:1080/services/abd/abd_beta.php",
-    )
+    mis_api_base = Column(String(500), default=_MIS_API_BASE_DEFAULT)
+    callback_api_url = Column(String(500), default=_CALLBACK_API_URL_DEFAULT)
+    category_change_api = Column(String(500), default=_CATEGORY_CHANGE_API_DEFAULT)
 
     # Prompt config (replaces prompt_config.json)
     script_rule = Column(Text, default="")

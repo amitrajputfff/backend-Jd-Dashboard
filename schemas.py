@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
+
+# Env-driven so a fresh assistant's default API URLs match the environment the
+# backend is running in (local dev vs a deployed server) without a code change.
+_MIS_API_BASE_DEFAULT = os.getenv("MIS_API_BASE", "http://192.168.8.67:8000")
+_CALLBACK_API_URL_DEFAULT = os.getenv(
+    "CALLBACK_API_URL", "http://192.168.8.67:8000/leads/ai-lead-qualify/callback"
+)
+_CATEGORY_CHANGE_API_DEFAULT = os.getenv(
+    "CATEGORY_CHANGE_API", "http://192.168.20.105:1080/services/abd/abd_beta.php"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -44,13 +55,15 @@ class CreateAssistantRequest(BaseModel):
     functions: Optional[List[Any]] = Field(default_factory=list)
 
     # Bot API URLs
-    mis_api_base: Optional[str] = "http://192.168.8.67:8000"
-    callback_api_url: Optional[str] = (
-        "http://192.168.8.67:8000/leads/ai-lead-qualify/callback"
-    )
-    category_change_api: Optional[str] = (
-        "http://192.168.20.105:1080/services/abd/abd_beta.php"
-    )
+    mis_api_base: Optional[str] = _MIS_API_BASE_DEFAULT
+    callback_api_url: Optional[str] = _CALLBACK_API_URL_DEFAULT
+    category_change_api: Optional[str] = _CATEGORY_CHANGE_API_DEFAULT
+
+    # Per-assistant MongoDB override — lets one running bot_dev.py worker
+    # persist different assistants' call transcripts to different MongoDB
+    # deployments (e.g. a dev bot -> dev Mongo, a live bot -> prod Mongo).
+    # None/empty means "use the worker's own MONGO_URI env default".
+    mongo_uri: Optional[str] = None
 
     # Prompt config
     script_rule: Optional[str] = ""
@@ -97,12 +110,16 @@ class CreateAssistantRequest(BaseModel):
     # Lock flag — locked assistants are live in production and cannot be edited
     is_locked: Optional[bool] = False
 
+    # TTS provider/model/voice — persisted, resolved via voice_catalog.resolve_voice()
+    # at call start. voice_id 12 = our own IndicF5 "simran" (current default).
+    tts_provider_id: Optional[int] = None
+    tts_model_id: Optional[int] = None
+    voice_id: Optional[int] = 12
+
     # Accepted but ignored — AI-create flow extras
     language_id: Optional[int] = None
     stt_model_id: Optional[int] = None
-    tts_model_id: Optional[int] = None
     llm_model_id: Optional[int] = None
-    voice_id: Optional[int] = None
     generate_description: Optional[bool] = None
     generate_tags: Optional[bool] = None
     generate_config: Optional[bool] = None
@@ -126,6 +143,7 @@ class UpdateAssistantRequest(BaseModel):
     mis_api_base: Optional[str] = None
     callback_api_url: Optional[str] = None
     category_change_api: Optional[str] = None
+    mongo_uri: Optional[str] = None
     script_rule: Optional[str] = None
     opening_instruction: Optional[str] = None
     closing_instruction: Optional[str] = None
@@ -168,6 +186,11 @@ class UpdateAssistantRequest(BaseModel):
     # Lock flag — only admins should flip this
     is_locked: Optional[bool] = None
 
+    # TTS provider/model/voice
+    tts_provider_id: Optional[int] = None
+    tts_model_id: Optional[int] = None
+    voice_id: Optional[int] = None
+
 
 # ---------------------------------------------------------------------------
 # Response — matches AssistantDetails TypeScript interface
@@ -193,6 +216,9 @@ class AssistantResponse(BaseModel):
     mis_api_base: str
     callback_api_url: str
     category_change_api: str
+
+    # Per-assistant MongoDB override (None = worker's own MONGO_URI env default)
+    mongo_uri: Optional[str] = None
 
     # Prompt config
     script_rule: str
@@ -255,12 +281,16 @@ class AssistantResponse(BaseModel):
     # Language notes
     lang_notes: str
 
-    # Legacy / frontend-compatibility fields (not stored in DB, provided as defaults)
+    # STT/LLM are fixed (not selectable) — Sarvam saaras:v3 / Gemini 3.1 Flash Lite,
+    # the only entries in MOCK_STT_MODELS/MOCK_LLM_MODELS, so these stay hardcoded.
     language_id: int = 11
     stt_model_id: int = 1
-    tts_model_id: int = 1
     llm_model_id: int = 1
-    voice_id: int = 1
+
+    # TTS provider/model/voice — real, sourced from the stored doc (see voice_catalog.py)
+    tts_provider_id: int = 3
+    tts_model_id: int = 1
+    voice_id: int = 12
     speech_speed: float = 1.0
     pitch: str = "0%"
     interruption_level: str = "Low"
@@ -296,6 +326,10 @@ class AssistantsListResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class BotConfig(BaseModel):
+    # Symmetric with WorkflowBotConfig.bot_type — lets a bot runtime that
+    # doesn't already know which kind of bot it's talking to (e.g. a resolver
+    # endpoint trying both collections) dispatch on this field.
+    bot_type: str = "assistant"
     assistant_id: str
     organization_id: str
     system_prompt: str
@@ -305,6 +339,9 @@ class BotConfig(BaseModel):
     functions: List[Any]
     api_urls: Dict[str, str]          # mis_api_base, callback_api_url, category_change_api
     prompt_config: Dict[str, str]     # script_rule, opening_instruction, closing_instruction, timeout_message
+    # Per-assistant MongoDB override — see voicebot_nodcode_platform/bot.py's
+    # _get_mongo_collection(). None = worker's own MONGO_URI env default.
+    mongo_uri: Optional[str] = None
     # Bot behaviour settings
     language: str
     temperature: float
@@ -315,6 +352,11 @@ class BotConfig(BaseModel):
     max_call_duration: int
     filler_message: List[str]
     function_filler_message: List[str]
+    # TTS provider/voice — resolved from voice_id via voice_catalog.resolve_voice().
+    # tts_provider: "justdial" (own IndicF5) | "sarvam" (bulbul:v3). tts_voice is the
+    # speaker string to pass to that engine.
+    tts_provider: str = "justdial"
+    tts_voice: str = "simran"
     # Sarvam STT / VAD tuning
     sarvam_min_rms: int = 600
     sarvam_min_speech_ms: int = 500

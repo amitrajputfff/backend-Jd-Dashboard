@@ -9,10 +9,11 @@ Endpoints:
 from __future__ import annotations
 
 import json as _json
+import logging
 import os
 import re
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
@@ -26,6 +27,8 @@ except ImportError:
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "gemini-2.0-flash-lite")
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -82,6 +85,30 @@ def _serialize_doc(doc: dict) -> dict:
     return doc
 
 
+async def _bump_calls_today(assistant_id: str) -> None:
+    """Increment the assistant's calls_today counter, resetting it to 1 on a
+    new UTC day. Best-effort — a failure here must never fail call-log
+    creation (the bot depends on that succeeding to record the call).
+    """
+    if not assistant_id:
+        return
+    try:
+        col = get_assistants_col()
+        today = datetime.now(timezone.utc).date().isoformat()
+        doc = await col.find_one({"assistant_id": assistant_id}, {"calls_today_date": 1})
+        if doc is None:
+            return  # unknown assistant_id — nothing to bump
+        if doc.get("calls_today_date") == today:
+            await col.update_one({"assistant_id": assistant_id}, {"$inc": {"calls_today": 1}})
+        else:
+            await col.update_one(
+                {"assistant_id": assistant_id},
+                {"$set": {"calls_today": 1, "calls_today_date": today}},
+            )
+    except Exception as e:
+        _log.warning(f"[calls_today] Failed to bump for assistant_id={assistant_id!r}: {e}")
+
+
 # ---------------------------------------------------------------------------
 # POST /api/call-logs  — create
 # ---------------------------------------------------------------------------
@@ -96,6 +123,7 @@ async def create_call_log(data: CreateCallLogRequest):
     result = await col.insert_one(doc)
     doc["id"] = str(result.inserted_id)
     doc.pop("_id", None)
+    await _bump_calls_today(data.assistant_id)
     return doc
 
 

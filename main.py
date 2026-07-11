@@ -14,10 +14,10 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()  # load backend/.env before any module reads os.environ
 
 try:
-    from .routers import assistants, call_logs, analysis, phone_numbers, workflow_bots
+    from .routers import assistants, bot_config, call_logs, analysis, phone_numbers, workflow_bots
     from .mongo import get_assistants_col, get_workflow_bots_col
 except ImportError:
-    from routers import assistants, call_logs, analysis, phone_numbers, workflow_bots
+    from routers import assistants, bot_config, call_logs, analysis, phone_numbers, workflow_bots
     from mongo import get_assistants_col, get_workflow_bots_col
 
 
@@ -59,6 +59,7 @@ app.include_router(call_logs.router, prefix="/backend")
 app.include_router(analysis.router, prefix="/backend")
 app.include_router(phone_numbers.router, prefix="/backend")
 app.include_router(workflow_bots.router, prefix="/backend")
+app.include_router(bot_config.router, prefix="/backend")
 
 
 @app.get("/health")
