@@ -118,6 +118,11 @@ class CreateAssistantRequest(BaseModel):
     tts_model_id: Optional[int] = None
     voice_id: Optional[int] = 12
 
+    # How easily a caller can interrupt the bot mid-sentence — a simple named
+    # preset (see interruption_presets.py) instead of exposing raw seconds/
+    # word-count knobs to PMs. "balanced" matches today's behavior.
+    interruption_sensitivity: Optional[str] = "balanced"
+
     # Accepted but ignored — AI-create flow extras
     language_id: Optional[int] = None
     stt_model_id: Optional[int] = None
@@ -193,6 +198,14 @@ class UpdateAssistantRequest(BaseModel):
     tts_provider_id: Optional[int] = None
     tts_model_id: Optional[int] = None
     voice_id: Optional[int] = None
+
+    # How easily a caller can interrupt the bot mid-sentence
+    interruption_sensitivity: Optional[str] = None
+
+    # Present only when the existing doc has is_locked=True — required to
+    # unlock it or to change ANY other field while it stays locked (see
+    # routers/assistants.py's update_assistant). Never persisted.
+    password: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +308,7 @@ class AssistantResponse(BaseModel):
     tts_provider_id: int = 3
     tts_model_id: int = 1
     voice_id: int = 12
+    interruption_sensitivity: str = "balanced"
     speech_speed: float = 1.0
     pitch: str = "0%"
     interruption_level: str = "Low"
@@ -362,6 +376,10 @@ class BotConfig(BaseModel):
     # speaker string to pass to that engine.
     tts_provider: str = "justdial"
     tts_voice: str = "simran"
+    # How easily a caller can interrupt the bot mid-sentence — a named preset
+    # ("patient" | "balanced" | "responsive") resolved into concrete
+    # LiveKit/Pipecat parameters at call start (see interruption_presets.py).
+    interruption_sensitivity: str = "balanced"
     # Sarvam STT / VAD tuning
     sarvam_min_rms: int = 600
     sarvam_min_speech_ms: int = 500
@@ -557,6 +575,18 @@ class CreateWorkflowBotRequest(BaseModel):
     lang_notes: Optional[str] = ""
     analysis_prompt: Optional[str] = ""
 
+    # TTS provider/model/voice — same field names/defaults as CreateAssistantRequest,
+    # persisted and resolved via voice_catalog.resolve_voice() at call start.
+    tts_provider_id: Optional[int] = None
+    tts_model_id: Optional[int] = None
+    voice_id: Optional[int] = 12
+
+    # How easily a caller can interrupt the bot mid-sentence
+    interruption_sensitivity: Optional[str] = "balanced"
+
+    # Lock flag — same meaning/enforcement as Assistant.is_locked
+    is_locked: Optional[bool] = False
+
 
 class UpdateWorkflowBotRequest(BaseModel):
     name: Optional[str] = None
@@ -588,6 +618,22 @@ class UpdateWorkflowBotRequest(BaseModel):
     inactivity_end_phrase: Optional[str] = None
     lang_notes: Optional[str] = None
     analysis_prompt: Optional[str] = None
+
+    # TTS provider/model/voice
+    tts_provider_id: Optional[int] = None
+    tts_model_id: Optional[int] = None
+    voice_id: Optional[int] = None
+
+    # How easily a caller can interrupt the bot mid-sentence
+    interruption_sensitivity: Optional[str] = None
+
+    # Lock flag — only admins should flip this
+    is_locked: Optional[bool] = None
+
+    # Present only when the existing doc has is_locked=True — required to
+    # unlock it or to change ANY other field while it stays locked (see
+    # routers/workflow_bots.py's update_workflow_bot). Never persisted.
+    password: Optional[str] = None
 
 
 class WorkflowBotResponse(BaseModel):
@@ -624,6 +670,14 @@ class WorkflowBotResponse(BaseModel):
     inactivity_end_phrase: str
     lang_notes: str
     analysis_prompt: str
+    # TTS provider/model/voice — real, sourced from the stored doc (see voice_catalog.py)
+    tts_provider_id: int = 3
+    tts_model_id: int = 1
+    voice_id: int = 12
+    interruption_sensitivity: str = "balanced"
+    # Lock — True means live in production; edits and deletes are rejected
+    # without the owning user's password (see update_workflow_bot).
+    is_locked: bool = False
     # Timestamps / meta
     is_deleted: bool
     deleted_until: Optional[str]
@@ -674,3 +728,10 @@ class WorkflowBotConfig(BaseModel):
     inactivity_end_phrase: str = "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद."
     lang_notes: str = ""
     analysis_prompt: str = ""
+    # TTS provider/voice — resolved from voice_id via voice_catalog.resolve_voice(),
+    # same semantics as BotConfig.tts_provider/tts_voice above.
+    tts_provider: str = "justdial"
+    tts_voice: str = "simran"
+    # How easily a caller can interrupt the bot mid-sentence — same
+    # named-preset semantics as BotConfig.interruption_sensitivity above.
+    interruption_sensitivity: str = "balanced"

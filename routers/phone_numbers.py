@@ -1,9 +1,15 @@
-"""Phone numbers router — LiveKit SIP dispatch rules mapped to assistants.
+"""Phone numbers router — LiveKit SIP dispatch rules mapped to assistants OR
+workflow bots.
 
 LiveKit is the source of truth. This router:
- - Lists SIP dispatch rules with their trunk DIDs and current assistant assignment
-   (read from rule.room_config.metadata JSON: {"assistant_id": "..."}).
- - Assigns/unassigns an assistant by patching room_config.metadata on the dispatch rule
+ - Lists SIP dispatch rules with their trunk DIDs and current bot assignment
+   (read from rule.room_config.metadata JSON: {"assistant_id": "..."} — the
+   JSON key is a legacy name; the value is really just a bot id, and may name
+   either an Assistant or a Workflow Bot doc, since bot_dev.py's entrypoint
+   resolves it via the unified /backend/api/bot-config/{id} resolver and
+   branches on bot_type — confirmed neither collection is assumed before
+   that branch runs, see bot_dev.py ~line 307-322).
+ - Assigns/unassigns a bot by patching room_config.metadata on the dispatch rule
    using a fetch-then-replace flow (SIPDispatchRuleUpdate has no room_config field).
  - Rejects modifications to protected rule IDs (PROTECTED_DISPATCH_RULE_IDS env var).
 """
@@ -16,9 +22,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 
 try:
-    from ..mongo import get_assistants_col
+    from ..mongo import get_assistants_col, get_workflow_bots_col
 except ImportError:
-    from mongo import get_assistants_col
+    from mongo import get_assistants_col, get_workflow_bots_col
 
 from livekit.api import LiveKitAPI
 from livekit.api.sip_service import ListSIPDispatchRuleRequest, ListSIPInboundTrunkRequest
@@ -64,7 +70,7 @@ def _ts_to_iso(proto_timestamp) -> str:
         return datetime.now(tz=timezone.utc).isoformat()
 
 
-async def _build_row(rule, trunks_by_id: dict, assistants_by_id: dict) -> dict:
+async def _build_row(rule, trunks_by_id: dict, bots_by_id: dict) -> dict:
     trunk_id = rule.trunk_ids[0] if rule.trunk_ids else ""
     trunk = trunks_by_id.get(trunk_id)
     numbers: list[str] = list(trunk.numbers) if trunk else []
@@ -77,7 +83,7 @@ async def _build_row(rule, trunks_by_id: dict, assistants_by_id: dict) -> dict:
     mapped_assistant = None
     aid = meta.get("assistant_id", "")
     if aid:
-        a = assistants_by_id.get(aid)
+        a = bots_by_id.get(aid)
         if a:
             mapped_assistant = {
                 "id": str(a.get("id", 0)),
@@ -85,15 +91,17 @@ async def _build_row(rule, trunks_by_id: dict, assistants_by_id: dict) -> dict:
                 "name": a.get("name", "Unknown"),
                 "status": a.get("status", "active"),
                 "is_active": a.get("is_active", True),
+                "bot_type": a.get("_bot_type", "assistant"),
             }
         else:
-            # assistant_id set in LiveKit but not found in Mongo — show raw UUID
+            # assistant_id set in LiveKit but not found in either collection — show raw UUID
             mapped_assistant = {
                 "id": "0",
                 "assistant_id": aid,
                 "name": aid,
                 "status": "unknown",
                 "is_active": True,
+                "bot_type": "unknown",
             }
 
     return {
@@ -129,12 +137,28 @@ async def _fetch_rule_by_id(rule_id: str, lk: LiveKitAPI):
     return next((r for r in (resp.items or []) if r.sip_dispatch_rule_id == rule_id), None)
 
 
-async def _fetch_assistants_map(assistant_ids: set[str]) -> dict:
-    if not assistant_ids:
+async def _fetch_bots_map(bot_ids: set[str]) -> dict:
+    """Resolve a set of bot ids against BOTH the assistants and workflow_bots
+    collections. Each returned doc gets an internal `_bot_type` key
+    ("assistant" | "workflow") so _build_row can label the row; assistants
+    win on an id collision (shouldn't happen — both use uuid4 — but keeps
+    behavior deterministic)."""
+    if not bot_ids:
         return {}
-    col = get_assistants_col()
-    docs = await col.find({"assistant_id": {"$in": list(assistant_ids)}}).to_list(length=200)
-    return {d["assistant_id"]: d for d in docs}
+    ids = list(bot_ids)
+
+    assistants_col = get_assistants_col()
+    assistant_docs = await assistants_col.find({"assistant_id": {"$in": ids}}).to_list(length=200)
+
+    workflow_bots_col = get_workflow_bots_col()
+    workflow_docs = await workflow_bots_col.find({"workflow_bot_id": {"$in": ids}}).to_list(length=200)
+
+    merged: dict = {}
+    for d in workflow_docs:
+        merged[d["workflow_bot_id"]] = {**d, "_bot_type": "workflow"}
+    for d in assistant_docs:
+        merged[d["assistant_id"]] = {**d, "_bot_type": "assistant"}
+    return merged
 
 
 def _extract_assistant_ids(rules) -> set[str]:
@@ -167,11 +191,11 @@ async def list_phone_numbers(
         log.exception("LiveKit list_dispatch_rule failed")
         raise HTTPException(status_code=502, detail=f"LiveKit error: {exc}") from exc
 
-    assistants_by_id = await _fetch_assistants_map(_extract_assistant_ids(rules))
+    bots_by_id = await _fetch_bots_map(_extract_assistant_ids(rules))
 
     rows = []
     for rule in rules:
-        row = await _build_row(rule, trunks_by_id, assistants_by_id)
+        row = await _build_row(rule, trunks_by_id, bots_by_id)
         if search:
             needle = search.lower()
             searchable = f"{row['phone_number']} {row['name']} {row['agent_name']}".lower()
@@ -197,22 +221,30 @@ async def get_phone_number(rule_id: str):
     if not rule:
         raise HTTPException(status_code=404, detail=f"Dispatch rule {rule_id!r} not found")
 
-    assistants_by_id = await _fetch_assistants_map(_extract_assistant_ids([rule]))
-    row = await _build_row(rule, trunks_by_id, assistants_by_id)
+    bots_by_id = await _fetch_bots_map(_extract_assistant_ids([rule]))
+    row = await _build_row(rule, trunks_by_id, bots_by_id)
     return {**row, "provider": None}
 
 
 @router.post("/api/assistants/{assistant_id}/phone-numbers/{rule_id}")
 async def assign_assistant(assistant_id: str, rule_id: str):
+    """Assign a bot (Assistant OR Workflow Bot — `assistant_id` here is really
+    just a bot id, kept as the URL/param name for backward compat) to a
+    dispatch rule."""
     if rule_id in PROTECTED_RULE_IDS:
         raise HTTPException(
             status_code=403,
             detail="This dispatch rule is live in production and is protected from modifications.",
         )
 
-    col = get_assistants_col()
-    if not await col.find_one({"assistant_id": assistant_id}, {"_id": 1}):
-        raise HTTPException(status_code=404, detail=f"Assistant {assistant_id!r} not found")
+    assistants_col = get_assistants_col()
+    workflow_bots_col = get_workflow_bots_col()
+    is_assistant = await assistants_col.find_one({"assistant_id": assistant_id}, {"_id": 1})
+    is_workflow_bot = None if is_assistant else await workflow_bots_col.find_one(
+        {"workflow_bot_id": assistant_id}, {"_id": 1}
+    )
+    if not is_assistant and not is_workflow_bot:
+        raise HTTPException(status_code=404, detail=f"No assistant or workflow bot found for id {assistant_id!r}")
 
     try:
         async with _lkapi() as lk:
@@ -237,8 +269,8 @@ async def assign_assistant(assistant_id: str, rule_id: str):
         log.exception("Failed to assign assistant %s to rule %s", assistant_id, rule_id)
         raise HTTPException(status_code=502, detail=f"LiveKit error: {exc}") from exc
 
-    assistants_by_id = await _fetch_assistants_map({assistant_id})
-    row = await _build_row(updated, trunks_by_id, assistants_by_id)
+    bots_by_id = await _fetch_bots_map({assistant_id})
+    row = await _build_row(updated, trunks_by_id, bots_by_id)
     return {**row, "provider": None}
 
 

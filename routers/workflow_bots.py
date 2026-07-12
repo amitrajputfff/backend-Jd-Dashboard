@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 
 try:
     from ..mongo import get_workflow_bots_col, next_sequence
@@ -18,6 +18,8 @@ try:
         WorkflowBotResponse,
         WorkflowBotsListResponse,
     )
+    from ..voice_catalog import DEFAULT_VOICE_ID, resolve_voice
+    from . import auth
 except ImportError:
     from mongo import get_workflow_bots_col, next_sequence
     from schemas import (
@@ -27,6 +29,8 @@ except ImportError:
         WorkflowBotResponse,
         WorkflowBotsListResponse,
     )
+    from voice_catalog import DEFAULT_VOICE_ID, resolve_voice
+    from routers import auth
 
 router = APIRouter()
 
@@ -77,6 +81,11 @@ def _doc_to_response(doc: dict) -> WorkflowBotResponse:
         inactivity_end_phrase=doc.get("inactivity_end_phrase", "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद."),
         lang_notes=doc.get("lang_notes", ""),
         analysis_prompt=doc.get("analysis_prompt", ""),
+        tts_provider_id=doc.get("tts_provider_id", 3),
+        tts_model_id=doc.get("tts_model_id", 1),
+        voice_id=doc.get("voice_id", DEFAULT_VOICE_ID),
+        interruption_sensitivity=doc.get("interruption_sensitivity") or "balanced",
+        is_locked=bool(doc.get("is_locked", False)),
         is_deleted=bool(doc.get("is_deleted", False)),
         deleted_until=doc.get("deleted_until"),
         is_active=bool(doc.get("is_active", True)),
@@ -129,6 +138,11 @@ def _new_doc(data: CreateWorkflowBotRequest, wid: int) -> dict:
         "inactivity_end_phrase": data.inactivity_end_phrase or "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद.",
         "lang_notes": data.lang_notes or "",
         "analysis_prompt": data.analysis_prompt or "",
+        "tts_provider_id": data.tts_provider_id if data.tts_provider_id is not None else 3,
+        "tts_model_id": data.tts_model_id if data.tts_model_id is not None else 1,
+        "voice_id": data.voice_id if data.voice_id is not None else DEFAULT_VOICE_ID,
+        "interruption_sensitivity": data.interruption_sensitivity or "balanced",
+        "is_locked": bool(data.is_locked or False),
         "is_deleted": False,
         "is_active": True,
         "calls_today": 0,
@@ -197,10 +211,20 @@ async def get_workflow_bot(workflow_bot_id: str):
 # ---------------------------------------------------------------------------
 
 @router.put("/api/workflow-bots/{workflow_bot_id}", response_model=WorkflowBotResponse)
-async def update_workflow_bot(workflow_bot_id: str, data: UpdateWorkflowBotRequest):
+async def update_workflow_bot(
+    workflow_bot_id: str,
+    data: UpdateWorkflowBotRequest,
+    authorization: Optional[str] = Header(default=None),
+):
     col = get_workflow_bots_col()
-    await _get_or_404(workflow_bot_id)
-    raw = data.model_dump(exclude_none=True)
+    doc = await _get_or_404(workflow_bot_id)
+    # Same lock semantics as assistants.py's update_assistant: a locked (Live)
+    # workflow bot requires the caller's real password for ANY change while it
+    # stays locked, including unlocking. Not currently locked -> free to edit,
+    # including freely setting is_locked=true for the first time.
+    if doc.get("is_locked"):
+        await auth.verify_live_bot_action(authorization, data.password)
+    raw = {k: v for k, v in data.model_dump(exclude_none=True).items() if k != "password"}
     # Serialize nested Workflow object to plain dict for Mongo
     if "workflow" in raw and hasattr(data.workflow, "model_dump"):
         raw["workflow"] = data.workflow.model_dump()
@@ -215,9 +239,15 @@ async def update_workflow_bot(workflow_bot_id: str, data: UpdateWorkflowBotReque
 # ---------------------------------------------------------------------------
 
 @router.delete("/api/workflow-bots/{workflow_bot_id}")
-async def delete_workflow_bot(workflow_bot_id: str):
+async def delete_workflow_bot(
+    workflow_bot_id: str,
+    password: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+):
     col = get_workflow_bots_col()
-    await _get_or_404(workflow_bot_id)
+    doc = await _get_or_404(workflow_bot_id)
+    if doc.get("is_locked"):
+        await auth.verify_live_bot_action(authorization, password)
     now = datetime.now(timezone.utc)
     await col.update_one(
         {"workflow_bot_id": workflow_bot_id},
@@ -289,11 +319,15 @@ async def clone_workflow_bot(workflow_bot_id: str, body: dict = None):
 @router.get("/api/workflow-bots/{workflow_bot_id}/bot-config", response_model=WorkflowBotConfig)
 async def get_workflow_bot_config(workflow_bot_id: str):
     doc = await _get_or_404(workflow_bot_id)
+    voice = resolve_voice(doc.get("voice_id"))
     return WorkflowBotConfig(
         bot_type="workflow",
         workflow_bot_id=doc["workflow_bot_id"],
         organization_id=doc.get("organization_id", ""),
         global_prompt=doc.get("global_prompt", ""),
+        tts_provider=voice["provider"],
+        tts_voice=voice["speaker"],
+        interruption_sensitivity=doc.get("interruption_sensitivity") or "balanced",
         workflow=doc.get("workflow", {"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}}),
         language=doc.get("language", "hindi"),
         temperature=doc.get("temperature", 0.7),

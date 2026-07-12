@@ -53,6 +53,16 @@ def get_workflow_bots_col():
     return _get_client()["no_code_platform"]["workflow_bots"]
 
 
+# ── no_code_platform — dashboard login accounts ─────────────────────────────
+
+def get_users_col():
+    """Dashboard login accounts — see backend/routers/auth.py. Minimal real
+    auth: email + bcrypt password hash, no OAuth/sessions/email-verification
+    (those frontend authApi methods stay unused — see auth.py's module
+    docstring for the exact scope decision)."""
+    return _get_client()["no_code_platform"]["users"]
+
+
 # ── ai_lead_qualify — call transcripts + analysis ────────────────────────────
 
 def get_transcripts_col():

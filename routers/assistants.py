@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 
 try:
     from ..mongo import get_assistants_col, next_sequence
@@ -20,6 +20,7 @@ try:
         _MIS_API_BASE_DEFAULT,
     )
     from ..voice_catalog import DEFAULT_VOICE_ID, resolve_voice
+    from . import auth
 except ImportError:
     from mongo import get_assistants_col, next_sequence
     from schemas import (
@@ -33,6 +34,7 @@ except ImportError:
         _MIS_API_BASE_DEFAULT,
     )
     from voice_catalog import DEFAULT_VOICE_ID, resolve_voice
+    from routers import auth
 
 router = APIRouter()
 
@@ -83,6 +85,7 @@ def _doc_to_response(doc: dict) -> AssistantResponse:
         tts_provider_id=doc.get("tts_provider_id", 3),
         tts_model_id=doc.get("tts_model_id", 1),
         voice_id=doc.get("voice_id", DEFAULT_VOICE_ID),
+        interruption_sensitivity=doc.get("interruption_sensitivity") or "balanced",
         language=doc.get("language", "hindi"),
         temperature=doc.get("temperature", 0.4),
         gemini_start_sensitivity=doc.get("gemini_start_sensitivity", "START_SENSITIVITY_LOW"),
@@ -171,6 +174,7 @@ def _new_doc(data: CreateAssistantRequest, aid: int) -> dict:
         "tts_provider_id": data.tts_provider_id if data.tts_provider_id is not None else 3,
         "tts_model_id": data.tts_model_id if data.tts_model_id is not None else 1,
         "voice_id": data.voice_id if data.voice_id is not None else DEFAULT_VOICE_ID,
+        "interruption_sensitivity": data.interruption_sensitivity or "balanced",
         "is_deleted": False,
         "is_active": True,
         "calls_today": 0,
@@ -252,15 +256,23 @@ async def get_assistant(assistant_id: str):
 # ---------------------------------------------------------------------------
 
 @router.put("/api/assistants/{assistant_id}", response_model=AssistantResponse)
-async def update_assistant(assistant_id: str, data: UpdateAssistantRequest):
+async def update_assistant(
+    assistant_id: str,
+    data: UpdateAssistantRequest,
+    authorization: Optional[str] = Header(default=None),
+):
     col = get_assistants_col()
     doc = await _get_or_404(assistant_id)
-    if doc.get("is_locked") and data.is_locked is None:
-        raise HTTPException(
-            status_code=403,
-            detail="This assistant is live in production and is locked from modifications.",
-        )
-    updates = {k: v for k, v in data.model_dump(exclude_none=True).items()}
+    # Locked (Live) assistants require the caller's real password for ANY
+    # change while they stay locked — including unlocking. A bot that isn't
+    # currently locked can be freely locked (no password needed to lock it in
+    # the first place). Previously this only checked "was is_locked included
+    # in the request at all", which any caller could trivially satisfy by
+    # passing is_locked=true alongside unrelated field changes — a real
+    # bypass, fixed here.
+    if doc.get("is_locked"):
+        await auth.verify_live_bot_action(authorization, data.password)
+    updates = {k: v for k, v in data.model_dump(exclude_none=True).items() if k != "password"}
     updates["updated_at"] = datetime.now(timezone.utc)
     await col.update_one({"assistant_id": assistant_id}, {"$set": updates})
     doc = await col.find_one({"assistant_id": assistant_id})
@@ -272,14 +284,15 @@ async def update_assistant(assistant_id: str, data: UpdateAssistantRequest):
 # ---------------------------------------------------------------------------
 
 @router.delete("/api/assistants/{assistant_id}")
-async def delete_assistant(assistant_id: str):
+async def delete_assistant(
+    assistant_id: str,
+    password: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+):
     col = get_assistants_col()
     doc = await _get_or_404(assistant_id)
     if doc.get("is_locked"):
-        raise HTTPException(
-            status_code=403,
-            detail="This assistant is live in production and is locked from modifications.",
-        )
+        await auth.verify_live_bot_action(authorization, password)
     now = datetime.now(timezone.utc)
     await col.update_one(
         {"assistant_id": assistant_id},
@@ -383,6 +396,7 @@ async def get_bot_config(assistant_id: str):
         function_filler_message=doc.get("function_filler_message", []),
         tts_provider=_voice["provider"],
         tts_voice=_voice["speaker"],
+        interruption_sensitivity=doc.get("interruption_sensitivity") or "balanced",
         sarvam_min_rms=doc.get("sarvam_min_rms", 600),
         sarvam_min_speech_ms=doc.get("sarvam_min_speech_ms", 500),
         sarvam_min_speech_ms_singleword=doc.get("sarvam_min_speech_ms_singleword", 800),
