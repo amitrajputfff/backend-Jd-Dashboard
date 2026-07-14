@@ -37,6 +37,7 @@ auth.
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -82,6 +83,16 @@ class LoginBody(BaseModel):
     password: str
     recaptcha_token: Optional[str] = None
     remember_me: Optional[str] = None
+
+
+class RegisterBody(BaseModel):
+    email: str
+    password: str
+    confirm_password: str
+    name: str
+    organization_name: str
+    phone_number: Optional[str] = None
+    recaptcha_token: Optional[str] = None
 
 
 class RefreshBody(BaseModel):
@@ -198,6 +209,65 @@ async def login(body: LoginBody):
         "data": {"token": access, "refresh_token": refresh, "user": _doc_to_user(doc)},
         "success": True,
         "message": "Login successful",
+    }
+
+
+@router.post("/api/auth/register")
+async def register(body: RegisterBody):
+    """Self-service account creation — no email verification (none is wired
+    up), no real org system yet. Each signup gets its own organization_id
+    slug so future per-account/per-org features have something to key off.
+    Mirrors seed_admin_user.py's user-doc shape exactly, so admin-seeded and
+    self-registered users are indistinguishable to the rest of the app.
+    """
+    email = body.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    if body.password != body.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match.")
+    if len(body.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    if not body.name.strip():
+        raise HTTPException(status_code=400, detail="Name is required.")
+    if not body.organization_name.strip():
+        raise HTTPException(status_code=400, detail="Organization name is required.")
+
+    users_col = get_users_col()
+    if await users_col.find_one({"email": email}):
+        raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+    user_id = await next_sequence("user_id")
+    org_slug = re.sub(r"[^a-z0-9]+", "-", body.organization_name.strip().lower()).strip("-") or "org"
+    organization_id = f"org-{org_slug}-{user_id}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    doc = {
+        "id": user_id,
+        "email": email,
+        "password_hash": hash_password(body.password),
+        "name": body.name.strip(),
+        "phone_number": body.phone_number,
+        "is_active": True,
+        "organization_id": organization_id,
+        "organization_name": body.organization_name.strip(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await users_col.insert_one(doc)
+
+    return {
+        "data": {
+            "user": {
+                "id": user_id,
+                "email": email,
+                "name": doc["name"],
+                "organization_id": organization_id,
+                "email_verified": False,
+            },
+            "verification_sent": False,
+        },
+        "success": True,
+        "message": "Account created successfully. You can now sign in.",
     }
 
 
