@@ -123,6 +123,11 @@ class CreateAssistantRequest(BaseModel):
     # word-count knobs to PMs. "balanced" matches today's behavior.
     interruption_sensitivity: Optional[str] = "balanced"
 
+    # Whether to mute the caller's mic while the bot speaks its greeting / closing
+    # lines. Defaults True — matches the previously-unconditional behavior.
+    mute_during_greeting: Optional[bool] = True
+    mute_during_closing: Optional[bool] = True
+
     # Accepted but ignored — AI-create flow extras
     language_id: Optional[int] = None
     stt_model_id: Optional[int] = None
@@ -201,6 +206,10 @@ class UpdateAssistantRequest(BaseModel):
 
     # How easily a caller can interrupt the bot mid-sentence
     interruption_sensitivity: Optional[str] = None
+
+    # Whether to mute the caller's mic while the bot speaks its greeting / closing lines.
+    mute_during_greeting: Optional[bool] = None
+    mute_during_closing: Optional[bool] = None
 
     # Present only when the existing doc has is_locked=True — required to
     # unlock it or to change ANY other field while it stays locked (see
@@ -309,6 +318,8 @@ class AssistantResponse(BaseModel):
     tts_model_id: int = 1
     voice_id: int = 12
     interruption_sensitivity: str = "balanced"
+    mute_during_greeting: bool = True
+    mute_during_closing: bool = True
     speech_speed: float = 1.0
     pitch: str = "0%"
     interruption_level: str = "Low"
@@ -380,6 +391,9 @@ class BotConfig(BaseModel):
     # ("patient" | "balanced" | "responsive") resolved into concrete
     # LiveKit/Pipecat parameters at call start (see interruption_presets.py).
     interruption_sensitivity: str = "balanced"
+    # Whether to mute the caller's mic while the bot speaks its greeting / closing lines.
+    mute_during_greeting: bool = True
+    mute_during_closing: bool = True
     # Sarvam STT / VAD tuning
     sarvam_min_rms: int = 600
     sarvam_min_speech_ms: int = 500
@@ -584,6 +598,11 @@ class CreateWorkflowBotRequest(BaseModel):
     # How easily a caller can interrupt the bot mid-sentence
     interruption_sensitivity: Optional[str] = "balanced"
 
+    # Whether to mute the caller's mic while the bot speaks its closing line.
+    # (No greeting-mute equivalent here — a workflow bot's opening line is the
+    # start node's PM-authored first_message, not a canned deterministic phrase.)
+    mute_during_closing: Optional[bool] = True
+
     # Lock flag — same meaning/enforcement as Assistant.is_locked
     is_locked: Optional[bool] = False
 
@@ -626,6 +645,9 @@ class UpdateWorkflowBotRequest(BaseModel):
 
     # How easily a caller can interrupt the bot mid-sentence
     interruption_sensitivity: Optional[str] = None
+
+    # Whether to mute the caller's mic while the bot speaks its closing line.
+    mute_during_closing: Optional[bool] = None
 
     # Lock flag — only admins should flip this
     is_locked: Optional[bool] = None
@@ -675,6 +697,7 @@ class WorkflowBotResponse(BaseModel):
     tts_model_id: int = 1
     voice_id: int = 12
     interruption_sensitivity: str = "balanced"
+    mute_during_closing: bool = True
     # Lock — True means live in production; edits and deletes are rejected
     # without the owning user's password (see update_workflow_bot).
     is_locked: bool = False
@@ -735,3 +758,5 @@ class WorkflowBotConfig(BaseModel):
     # How easily a caller can interrupt the bot mid-sentence — same
     # named-preset semantics as BotConfig.interruption_sensitivity above.
     interruption_sensitivity: str = "balanced"
+    # Whether to mute the caller's mic while the bot speaks its closing line.
+    mute_during_closing: bool = True
