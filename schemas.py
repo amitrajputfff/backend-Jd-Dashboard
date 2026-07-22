@@ -33,6 +33,12 @@ class AssistantFunction(BaseModel):
     custom_body: str = ""
     description: str = ""
     query_params: Dict[str, Any] = Field(default_factory=dict)
+    # "on_start": auto-invoked once at call start (e.g. MIS lead fetch), not an LLM tool.
+    # "in_call": registered as an LLM-callable tool during the conversation only.
+    # "both": auto-invoked at start AND available as an in-call tool.
+    # Missing/empty is normalized by callers to "both" for FetchLead and "in_call"
+    # otherwise, to preserve pre-existing bot behaviour.
+    trigger: Literal["on_start", "in_call", "both"] = "in_call"
 
     model_config = {"populate_by_name": True}
 

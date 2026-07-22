@@ -94,7 +94,7 @@ async def _synthesize_indicf5(text: str, speaker: str, speed: float) -> bytes:
     sample_rate = 24000
     request = {
         "text": text,
-        "nfe_step": 16,
+        "nfe_step": 32,
         "style": "auto",
         "transliterate": True,
         "speed": max(0.5, min(2.0, speed)),
