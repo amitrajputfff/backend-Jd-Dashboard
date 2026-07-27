@@ -7,14 +7,16 @@ business (vendor), confirms it's talking to the actual decision-maker, pitches
 the free-leads hook, builds urgency with a competitor-FOMO line, books a free
 manager visit + membership pitch, then hands the call off to a human manager.
 
-Two things are DELIBERATELY left as placeholders per this task's scope:
+Two things to know about this bot's current state:
 
-1. Vendor-context fields the bot needs to already know before the call starts —
-   {{business_name}}, {{owner_name}}, {{business_category}}, {{category_searches}},
-   {{competitor_name_1}}, {{competitor_name_2}} — are plain {{var}} tokens with no
-   data source wired up yet (unlike {{buyer_name}}/{{buyer_city}}/{{product}},
-   which workflow_engine.py auto-seeds from a consumer lead record). Wire a real
-   vendor-lookup source before using this bot for real calls.
+1. Vendor-context fields ({{mis.business_name}}, {{mis.owner_name}},
+   {{mis.business_category}}, {{mis.category_searches}}, {{mis.competitor_name_1}},
+   {{mis.competitor_name_2}}) are fetched by the `fn-vendor-lookup` function node
+   right after Start — it runs before anything is spoken and stores the response
+   under `output_key: "mis"`, so `{{mis.<field>}}` resolves anywhere downstream.
+   It currently points at MOCK_MIS_API_URL (backend/routers/mock_vendor.py's
+   hardcoded sample vendor) — THROWAWAY TEST DATA. Swap the node's `function.url`
+   for a real MIS/CRM vendor-lookup API before using this bot for real calls.
 
 2. "Transfer" is NOT a real SIP/telephony transfer — the engine has no such node
    type (see workflow_engine.py's module docstring). The `end-transfer` node
@@ -42,6 +44,11 @@ ORG_ID = sys.argv[1] if len(sys.argv) > 1 else "default-org"
 
 BOT_NAME = "Justdial Vendor Appointment Scheduling (Ishita)"
 
+# THROWAWAY TEST DATA — points at backend/routers/mock_vendor.py's hardcoded
+# sample vendor. Same BACKEND_URL convention voicebot_nodcode_platform/bot.py
+# uses. Swap for a real MIS/CRM vendor-lookup API before going live.
+MOCK_MIS_API_URL = os.getenv("BACKEND_URL", "http://localhost:8000") + "/backend/api/mock/vendor-lookup"
+
 
 # ---------------------------------------------------------------------------
 # Graph — nodes
@@ -56,7 +63,30 @@ NODES = [
         "id": "start", "type": "start", "position": {"x": 400, "y": 0},
         "data": {
             "kind": "start", "label": "Start — opening line",
-            "first_message": "Hello, kya aap {{business_name}} se baat kar rahe hain?",
+            "first_message": "Hello, kya aap {{mis.business_name}} se baat kar rahe hain?",
+        },
+    },
+    {
+        # Runs before anything is spoken (a function node placed directly after
+        # Start always executes first — see pipecat_workflow_engine.py's
+        # start()/_resolve_to_node()). Currently points at a hardcoded mock
+        # endpoint (backend/routers/mock_vendor.py) — swap MOCK_MIS_API_URL for
+        # a real MIS/CRM vendor-lookup API before going live.
+        "id": "fn-vendor-lookup", "type": "function", "position": {"x": 400, "y": 75},
+        "data": {
+            "kind": "function", "label": "Fetch Vendor Details (MOCK — test data)",
+            "function": {
+                "url": MOCK_MIS_API_URL,
+                "name": "fetch_vendor_details",
+                "method": "GET",
+                "schema": {},
+                "headers": {},
+                "body_format": "json",
+                "custom_body": "",
+                "description": "Looks up the vendor's business_name/owner_name/category/etc. before the call starts.",
+                "query_params": {},
+            },
+            "output_key": "mis",
         },
     },
     {
@@ -64,16 +94,16 @@ NODES = [
         "data": {
             "kind": "conversation", "label": "Stage 1A — Greeting + Identity",
             "prompt": (
-                "You just asked the caller to confirm they're connected with {{business_name}}. "
+                "You just asked the caller to confirm they're connected with {{mis.business_name}}. "
                 "Judge their reply: if they confirm (haan/ji/yes), call the 'confirmed' transition. "
-                "If they deny it, say it's a wrong number, or seem confused about {{business_name}}, "
+                "If they deny it, say it's a wrong number, or seem confused about {{mis.business_name}}, "
                 "call the 'wrong_number' transition. Don't ask anything else in this step."
             ),
             "transitions": [
                 _transition("t-1a-confirmed", "confirmed", "Confirmed identity",
-                            "Caller confirms they are connected with {{business_name}}"),
+                            "Caller confirms they are connected with {{mis.business_name}}"),
                 _transition("t-1a-wrong", "wrong_number", "Wrong number / denies",
-                            "Caller denies being from {{business_name}}, or it's a wrong number"),
+                            "Caller denies being from {{mis.business_name}}, or it's a wrong number"),
             ],
         },
     },
@@ -89,11 +119,11 @@ NODES = [
         "data": {
             "kind": "conversation", "label": "Stage 1B — Owner + Decision Maker Check",
             "prompt": (
-                "Say: 'Main Ishita bol rahi hoon JustDial se. Kya meri baat {{owner_name}} ji se ho "
-                "rahi hai?' If they confirm being {{owner_name}}, ask: 'Toh iss business ke decisions "
+                "Say: 'Main Ishita bol rahi hoon JustDial se. Kya meri baat {{mis.owner_name}} ji se ho "
+                "rahi hai?' If they confirm being {{mis.owner_name}}, ask: 'Toh iss business ke decisions "
                 "jaise ki advertisement ya promotion aap hi lete honge?' If they confirm they ARE the "
                 "decision-maker for ads/promotion, call the 'decision_maker' transition.\n"
-                "If they say they are NOT {{owner_name}}, or are an employee who doesn't make these "
+                "If they say they are NOT {{mis.owner_name}}, or are an employee who doesn't make these "
                 "decisions, say: 'Theek hai, kya main jaan sakti hoon ki decisions kaun leta hai?' — if "
                 "they offer a name/number for the real decision-maker, record it with set_variable, then "
                 "call the 'not_decision_maker' transition either way."
@@ -105,9 +135,9 @@ NODES = [
             ],
             "transitions": [
                 _transition("t-1b-yes", "decision_maker", "Confirmed owner/decision-maker",
-                            "Caller confirms being {{owner_name}} and confirms they decide on ads/promotion"),
+                            "Caller confirms being {{mis.owner_name}} and confirms they decide on ads/promotion"),
                 _transition("t-1b-no", "not_decision_maker", "Not owner/decision-maker",
-                            "Caller is not {{owner_name}}, is an employee, or doesn't decide on ads/promotion"),
+                            "Caller is not {{mis.owner_name}}, is an employee, or doesn't decide on ads/promotion"),
             ],
         },
     },
@@ -126,15 +156,15 @@ NODES = [
             "kind": "conversation", "label": "Stage 2 — The Free Lead Hook",
             "prompt": (
                 "Say: 'Humne aapko WhatsApp par ek interested customer ki free enquiry bheji thi "
-                "{{business_category}} se related. Kya aap chahenge ki aisi genuine enquiries aapko "
+                "{{mis.business_category}} se related. Kya aap chahenge ki aisi genuine enquiries aapko "
                 "regularly milti rahein?'\n"
                 "- If they agree/acknowledge positively: move on.\n"
                 "- If NOT interested or mention a bad experience: say 'I understand, par pichle mahine "
-                "aapke area mein {{category_searches}} se zyada customer enquiries aayi hain. Hum nahi "
+                "aapke area mein {{mis.category_searches}} se zyada customer enquiries aayi hain. Hum nahi "
                 "chahte ki aap genuine business opportunities miss karein. Just check karne mein kya "
                 "burai hai?' and continue once they acknowledge.\n"
                 "- If they say they never received the WhatsApp message: say 'Koi baat nahi "
-                "{{owner_name}} ji — kabhi kabhi messages filter ho jaate hain. Hum aapko abhi dobara "
+                "{{mis.owner_name}} ji — kabhi kabhi messages filter ho jaate hain. Hum aapko abhi dobara "
                 "bhej dete hain. Par uss enquiry se bhi zyada important baat yeh hai —' and continue.\n"
                 "As soon as the vendor acknowledges via ANY of these paths, call the 'acknowledged' "
                 "transition — it's the only way forward from this step."
@@ -150,9 +180,9 @@ NODES = [
         "data": {
             "kind": "conversation", "label": "Stage 3 — Competitor Proof + Urgency",
             "prompt": (
-                "Say: 'Dekhiye, pichle mahine aapke area mein {{business_category}} ki "
-                "{{category_searches}} se zyada enquiries aayi thin. Yeh saari enquiries aapke "
-                "competitors jaise {{competitor_name_1}} aur {{competitor_name_2}} ko ja rahi hain "
+                "Say: 'Dekhiye, pichle mahine aapke area mein {{mis.business_category}} ki "
+                "{{mis.category_searches}} se zyada enquiries aayi thin. Yeh saari enquiries aapke "
+                "competitors jaise {{mis.competitor_name_1}} aur {{mis.competitor_name_2}} ko ja rahi hain "
                 "kyunki woh JustDial se jude hain. Aap jude nahi hain toh yeh leads aapke paas nahi aa "
                 "rahi. Aap chahenge ki aapko bhi aisi leads milne lagein?' Once the vendor acknowledges "
                 "or agrees, call the 'acknowledged' transition."
@@ -245,7 +275,7 @@ NODES = [
         "data": {
             "kind": "conversation", "label": "Stage 4 — Closing & Hot Transfer (retry 2)",
             "prompt": (
-                "Say: 'Ek aakhri baat batati hoon — hum aapko ek aur free lead {{business_category}} "
+                "Say: 'Ek aakhri baat batati hoon — hum aapko ek aur free lead {{mis.business_category}} "
                 "se related jald hi bhej sakte hain jab Marketing Manager aapke office visit karein toh. "
                 "Bas address aur time confirm karna hai, kya main aapki call transfer karu?' If they "
                 "agree, call 'agrees'. If they still decline, call 'declines'."
@@ -291,7 +321,8 @@ NODES = [
 ]
 
 EDGES = [
-    {"id": "e-start", "source": "start", "target": "conv-1a"},
+    {"id": "e-start", "source": "start", "target": "fn-vendor-lookup"},
+    {"id": "e-vendor-lookup", "source": "fn-vendor-lookup", "target": "conv-1a"},
     {"id": "e-1a-confirmed", "source": "conv-1a", "target": "conv-1b", "sourceHandle": "t-1a-confirmed"},
     {"id": "e-1a-wrong", "source": "conv-1a", "target": "end-wrong-number", "sourceHandle": "t-1a-wrong"},
     {"id": "e-1b-yes", "source": "conv-1b", "target": "conv-2", "sourceHandle": "t-1b-yes"},
@@ -322,10 +353,11 @@ GLOBAL_PROMPT = (
 DESCRIPTION = (
     "Outbound vendor-outreach flow built from Revised_Script_30062024.pdf: confirms identity and "
     "decision-maker, pitches free leads, builds competitor-FOMO urgency, books a free manager visit + "
-    "membership pitch, then hands off. Vendor-context fields ({{business_name}}, {{owner_name}}, "
-    "{{business_category}}, {{category_searches}}, {{competitor_name_1}}, {{competitor_name_2}}) are "
-    "placeholders with no data source wired up yet. 'Transfer' only announces the handoff and ends the "
-    "call — there is no live SIP transfer."
+    "membership pitch, then hands off. A function node right after Start fetches vendor-context fields "
+    "({{mis.business_name}}, {{mis.owner_name}}, {{mis.business_category}}, {{mis.category_searches}}, "
+    "{{mis.competitor_name_1}}, {{mis.competitor_name_2}}) — currently a MOCK test endpoint "
+    "(backend/routers/mock_vendor.py), swap for a real MIS/CRM lookup before going live. 'Transfer' only "
+    "announces the handoff and ends the call — there is no live SIP transfer."
 )
 
 

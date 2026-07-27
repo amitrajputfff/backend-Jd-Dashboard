@@ -14,10 +14,10 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()  # load backend/.env before any module reads os.environ
 
 try:
-    from .routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test
+    from .routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor
     from .mongo import get_assistants_col, get_users_col, get_workflow_bots_col
 except ImportError:
-    from routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test
+    from routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor
     from mongo import get_assistants_col, get_users_col, get_workflow_bots_col
 
 
@@ -67,6 +67,7 @@ app.include_router(workflow_bots.router, prefix="/backend")
 app.include_router(bot_config.router, prefix="/backend")
 app.include_router(tts_preview.router, prefix="/backend")
 app.include_router(function_test.router, prefix="/backend")
+app.include_router(mock_vendor.router, prefix="/backend")
 app.include_router(auth.router, prefix="/backend")
 
 

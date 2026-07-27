@@ -41,6 +41,13 @@ _LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "")
 _protected_env = os.environ.get("PROTECTED_DISPATCH_RULE_IDS", "SDR_CSA2NurhzDxz")
 PROTECTED_RULE_IDS: set[str] = {r.strip() for r in _protected_env.split(",") if r.strip()}
 
+# The one active LiveKit worker (bot_dev.py) — per RUNNING_BOTS.md, the only
+# worker that understands Workflow Bots and per-bot Mongo dev/live overrides;
+# bot.py/bot_new.py/bot_pipeline.py share a different, legacy agent_name and
+# are "not part of the current stack." Every dispatch rule a bot gets assigned
+# to should route here — see _ensure_agent_name().
+TARGET_AGENT_NAME = os.environ.get("TARGET_AGENT_NAME", "voice-bot-justdial-live-2")
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -51,15 +58,35 @@ def _lkapi() -> LiveKitAPI:
 
 
 def _get_agent_name(rule) -> str:
-    """Extract the first dispatched agent name from rule.room_config.agents."""
+    """Extract the first dispatched agent name from rule.room_config.agents.
+
+    NOTE: this used to read `ra.dispatches[].agent_name` — but
+    RoomConfiguration.agents is a repeated RoomAgentDispatch, which has
+    `agent_name` directly (no nested `.dispatches`; that shape belongs to a
+    different, unrelated `RoomAgent` message). The old code always raised
+    AttributeError internally, silently swallowed by the bare `except`, so
+    this always returned "" regardless of what was actually configured.
+    """
     try:
         for ra in rule.room_config.agents:
-            for dispatch in ra.dispatches:
-                if dispatch.agent_name:
-                    return dispatch.agent_name
+            if ra.agent_name:
+                return ra.agent_name
     except Exception:
         pass
     return ""
+
+
+def _ensure_agent_name(rule, agent_name: str = TARGET_AGENT_NAME) -> None:
+    """Set (or add) a RoomAgentDispatch on `rule.room_config.agents` naming
+    `agent_name`, so LiveKit actually dispatches calls on this rule to the
+    correct worker pool — previously left as whatever the rule was
+    pre-provisioned with, completely independent of which bot got assigned.
+    Mutates `rule` in place; caller still needs to update_dispatch_rule(...).
+    """
+    if rule.room_config.agents:
+        rule.room_config.agents[0].agent_name = agent_name
+    else:
+        rule.room_config.agents.add(agent_name=agent_name)
 
 
 def _ts_to_iso(proto_timestamp) -> str:
@@ -258,6 +285,7 @@ async def assign_assistant(assistant_id: str, rule_id: str):
                 meta = {}
             meta["assistant_id"] = assistant_id
             rule.room_config.metadata = json.dumps(meta)
+            _ensure_agent_name(rule)
 
             updated = await lk.sip.update_dispatch_rule(rule_id, rule)
 
@@ -294,6 +322,10 @@ async def unassign_assistant(assistant_id: str, rule_id: str):
                 meta = {}
             meta.pop("assistant_id", None)
             rule.room_config.metadata = json.dumps(meta) if meta else ""
+            # Keep the rule pointed at the correct worker pool even while
+            # unassigned, so the next assignment (or a stray call in the
+            # meantime) doesn't fall back to whatever it was before.
+            _ensure_agent_name(rule)
 
             updated = await lk.sip.update_dispatch_rule(rule_id, rule)
 
