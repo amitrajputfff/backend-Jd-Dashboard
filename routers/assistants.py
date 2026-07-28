@@ -402,7 +402,7 @@ async def get_bot_config(assistant_id: str):
         },
         language=doc.get("language", DEFAULT_LANGUAGE),
         multilingual_enabled=bool(doc.get("multilingual_enabled", False)),
-        language_catalog=language_catalog_for_bot(bool(doc.get("multilingual_enabled", False))),
+        language_catalog=language_catalog_for_bot(),
         temperature=doc.get("temperature", 0.4),
         gemini_start_sensitivity=doc.get("gemini_start_sensitivity", "START_SENSITIVITY_LOW"),
         gemini_end_sensitivity=doc.get("gemini_end_sensitivity", "END_SENSITIVITY_HIGH"),

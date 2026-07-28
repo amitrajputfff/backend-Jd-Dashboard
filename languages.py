@@ -158,10 +158,18 @@ def allowed_languages(multilingual_enabled: bool) -> tuple[str, ...]:
     return tuple(LANG_CONFIGS.keys()) if multilingual_enabled else BASE_LANGUAGES
 
 
-def language_catalog_for_bot(multilingual_enabled: bool) -> Dict[str, Dict[str, Any]]:
-    """The catalog embedded in BotConfig/WorkflowBotConfig — every language the
-    bot is allowed to resolve to for this bot, keyed by slug. Kept small
-    (12 entries max) since it's fetched at the start of every call.
+def language_catalog_for_bot() -> Dict[str, Dict[str, Any]]:
+    """The catalog embedded in BotConfig/WorkflowBotConfig — always the FULL
+    12-language table, regardless of multilingual_enabled.
+
+    Why always full: an explicit test-call dropdown pick is a deliberate PM
+    action and must always work, even when the bot's multilingual toggle is
+    off — see resolve_call_language in bot.py, which honours an explicit
+    override unconditionally but still restricts the MIS/bot-default tiers to
+    BASE_LANGUAGES when the toggle is off. If this catalog only contained the
+    restricted set, an explicit non-base pick would have no sarvam/devanagari/
+    notes entry to resolve against and would silently misbehave. The toggle's
+    only real UI effect is which languages `allowed_languages()` offers in the
+    dashboard's own language Select.
     """
-    keys = allowed_languages(multilingual_enabled)
-    return {k: LANG_CONFIGS[k] for k in keys}
+    return dict(LANG_CONFIGS)
