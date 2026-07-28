@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
 
 try:
     from ..mongo import get_assistants_col, next_sequence
@@ -20,6 +20,8 @@ try:
         _MIS_API_BASE_DEFAULT,
     )
     from ..voice_catalog import DEFAULT_VOICE_ID, resolve_voice
+    from ..languages import DEFAULT_LANGUAGE, language_catalog_for_bot
+    from .lang_cache import warm_language_cache
     from . import auth
 except ImportError:
     from mongo import get_assistants_col, next_sequence
@@ -34,6 +36,8 @@ except ImportError:
         _MIS_API_BASE_DEFAULT,
     )
     from voice_catalog import DEFAULT_VOICE_ID, resolve_voice
+    from languages import DEFAULT_LANGUAGE, language_catalog_for_bot
+    from routers.lang_cache import warm_language_cache
     from routers import auth
 
 router = APIRouter()
@@ -88,7 +92,8 @@ def _doc_to_response(doc: dict) -> AssistantResponse:
         interruption_sensitivity=doc.get("interruption_sensitivity") or "balanced",
         mute_during_greeting=doc.get("mute_during_greeting", True),
         mute_during_closing=doc.get("mute_during_closing", True),
-        language=doc.get("language", "hindi"),
+        language=doc.get("language", DEFAULT_LANGUAGE),
+        multilingual_enabled=bool(doc.get("multilingual_enabled", False)),
         temperature=doc.get("temperature", 0.4),
         gemini_start_sensitivity=doc.get("gemini_start_sensitivity", "START_SENSITIVITY_LOW"),
         gemini_end_sensitivity=doc.get("gemini_end_sensitivity", "END_SENSITIVITY_HIGH"),
@@ -263,6 +268,7 @@ async def get_assistant(assistant_id: str):
 async def update_assistant(
     assistant_id: str,
     data: UpdateAssistantRequest,
+    background_tasks: BackgroundTasks,
     authorization: Optional[str] = Header(default=None),
 ):
     col = get_assistants_col()
@@ -280,6 +286,11 @@ async def update_assistant(
     updates["updated_at"] = datetime.now(timezone.utc)
     await col.update_one({"assistant_id": assistant_id}, {"$set": updates})
     doc = await col.find_one({"assistant_id": assistant_id})
+    # Warm the SIP-runtime fixed-string translation cache in the background —
+    # never blocks the save response. See routers/lang_cache.py's module
+    # docstring for why this has to happen here (on save) rather than at call
+    # start. warm_language_cache no-ops immediately for hinglish/hindi.
+    background_tasks.add_task(warm_language_cache, "assistant", assistant_id, doc)
     return _doc_to_response(doc)
 
 
@@ -389,7 +400,9 @@ async def get_bot_config(assistant_id: str):
             "closing_instruction": doc.get("closing_instruction", ""),
             "timeout_message": doc.get("timeout_message", ""),
         },
-        language=doc.get("language", "hindi"),
+        language=doc.get("language", DEFAULT_LANGUAGE),
+        multilingual_enabled=bool(doc.get("multilingual_enabled", False)),
+        language_catalog=language_catalog_for_bot(bool(doc.get("multilingual_enabled", False))),
         temperature=doc.get("temperature", 0.4),
         gemini_start_sensitivity=doc.get("gemini_start_sensitivity", "START_SENSITIVITY_LOW"),
         gemini_end_sensitivity=doc.get("gemini_end_sensitivity", "END_SENSITIVITY_HIGH"),

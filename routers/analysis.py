@@ -15,17 +15,21 @@ Endpoints:
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 try:
     from ..mongo import get_transcripts_col, get_assistants_col, get_analysis_prompts_col
+    from ..outcomes import DISPOSITION_MAP, OUTCOME_SUCCESS, UNANALYSED_SENTINEL
 except ImportError:
     from mongo import get_transcripts_col, get_assistants_col, get_analysis_prompts_col
+    from outcomes import DISPOSITION_MAP, OUTCOME_SUCCESS, UNANALYSED_SENTINEL
 
 router = APIRouter()
 
@@ -51,6 +55,95 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     return None
 
 
+def _date_range_clause(date_from: Optional[str], date_to: Optional[str]) -> dict:
+    """`call_start_time` is stored inconsistently across call records — as a
+    BSON datetime, an ISO string, AND a raw Unix-epoch float (the format
+    bot.py itself writes: `call_start_time: 1784884680.29`). Comparing only
+    against a datetime (the old behavior) silently matched zero documents
+    whenever the stored value was a float, since BSON treats numbers and
+    dates as different types. This covers all three representations via $or.
+    `date_to` is treated as inclusive of the whole day (exclusive upper bound
+    at the next day's midnight) — comparing against literal 00:00:00 excluded
+    every record from that day.
+    """
+    start_dt = end_dt = None
+    if date_from:
+        try:
+            start_dt = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            end_dt = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc) + timedelta(days=1)
+        except ValueError:
+            pass
+    if start_dt is None and end_dt is None:
+        return {}
+
+    def _bounds(gte, lt) -> dict:
+        b: dict = {}
+        if gte is not None:
+            b["$gte"] = gte
+        if lt is not None:
+            b["$lt"] = lt
+        return b
+
+    return {"$or": [
+        {"call_start_time": _bounds(start_dt, end_dt)},
+        {"call_start_time": _bounds(start_dt.isoformat() if start_dt else None, end_dt.isoformat() if end_dt else None)},
+        {"call_start_time": _bounds(start_dt.timestamp() if start_dt else None, end_dt.timestamp() if end_dt else None)},
+    ]}
+
+
+def _normalized_phone_variants(digits: str) -> set[str]:
+    """Mirrors voicebot_nodcode_platform/bot.py's normalize_mobile so a search
+    for any variant of a number matches all the ways it's actually stored:
+    lead_record.buyer_details.buyer_number (bare 10 digits), sip_info.caller_number
+    (leading zero), or a +91-prefixed form."""
+    n = digits
+    if n.startswith("91") and len(n) == 12:
+        n = n[2:]
+    if n.startswith("0") and len(n) == 11:
+        n = n[1:]
+    if len(n) != 10:
+        return {digits}
+    return {n, f"0{n}", f"91{n}", f"+91{n}"}
+
+
+def _search_clause(search: str) -> dict:
+    """Matches a lead ID or phone number across every field/representation the
+    verified document shape actually uses — see the module docstring for
+    which fields exist and why phone numbers need normalization."""
+    search = search.strip()
+    pattern = re.escape(search)
+    or_clauses: list[dict] = [
+        {"lead_id": {"$regex": pattern, "$options": "i"}},
+        {"call_id": {"$regex": pattern, "$options": "i"}},
+        {"lead_record.buyer_details.buyer_number": {"$regex": pattern}},
+        {"lead_record.mobile": {"$regex": pattern}},
+        {"sip_info.caller_number": {"$regex": pattern}},
+    ]
+
+    digits = re.sub(r"\D", "", search)
+    if digits:
+        for variant in _normalized_phone_variants(digits):
+            vp = re.escape(variant)
+            or_clauses.append({"lead_record.buyer_details.buyer_number": {"$regex": vp}})
+            or_clauses.append({"lead_record.mobile": {"$regex": vp}})
+            or_clauses.append({"sip_info.caller_number": {"$regex": vp}})
+            or_clauses.append({"call_id": {"$regex": vp}})
+
+    # lead_id is sometimes stored as an ObjectId rather than a string — see
+    # voicebot_nodcode_platform/fetch_lead_debug.py's identical fallback.
+    if re.fullmatch(r"[0-9a-fA-F]{24}", search):
+        try:
+            or_clauses.append({"lead_id": ObjectId(search)})
+        except InvalidId:
+            pass
+
+    return {"$or": or_clauses}
+
+
 # ---------------------------------------------------------------------------
 # 1. List call transcripts
 # ---------------------------------------------------------------------------
@@ -58,36 +151,39 @@ def _parse_dt(value: Any) -> Optional[datetime]:
 @router.get("/api/analysis/calls")
 async def list_analysis_calls(
     assistant_id: Optional[str] = Query(None),
-    outcome: Optional[str] = Query(None),
+    outcome: Optional[str] = Query(None, description=f"An outcome value, or {UNANALYSED_SENTINEL!r} for no analysis yet"),
     tagged: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None, description="Lead ID or phone number (any format)"),
     date_from: Optional[str] = Query(None, description="ISO date e.g. 2026-01-01"),
-    date_to: Optional[str] = Query(None, description="ISO date e.g. 2026-12-31"),
+    date_to: Optional[str] = Query(None, description="ISO date e.g. 2026-12-31 (inclusive)"),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=200),
 ):
     col = get_transcripts_col()
-    query: dict = {}
 
+    # Every filter is its own clause, combined with $and — search and the date
+    # range both need their own top-level $or, and assigning `query["$or"]`
+    # twice would silently clobber the first one.
+    clauses: list[dict] = []
     if assistant_id:
-        query["assistant_id"] = assistant_id
+        clauses.append({"assistant_id": assistant_id})
     if tagged is not None:
-        query["tagged"] = tagged
+        clauses.append({"tagged": tagged})
     if outcome:
-        query["analysis.call_outcome"] = outcome
-    if date_from or date_to:
-        dt_filter: dict = {}
-        if date_from:
-            try:
-                dt_filter["$gte"] = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
-            except ValueError:
-                pass
-        if date_to:
-            try:
-                dt_filter["$lte"] = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc)
-            except ValueError:
-                pass
-        if dt_filter:
-            query["call_start_time"] = dt_filter
+        if outcome == UNANALYSED_SENTINEL:
+            clauses.append({"$or": [
+                {"analysis.call_outcome": {"$in": [None, ""]}},
+                {"analysis.call_outcome": {"$exists": False}},
+            ]})
+        else:
+            clauses.append({"analysis.call_outcome": outcome})
+    date_clause = _date_range_clause(date_from, date_to)
+    if date_clause:
+        clauses.append(date_clause)
+    if search and search.strip():
+        clauses.append(_search_clause(search))
+
+    query: dict = {"$and": clauses} if clauses else {}
 
     # Project: omit heavy fields for listing
     projection = {
@@ -119,6 +215,18 @@ async def list_analysis_calls(
         "total": total,
         "skip": skip,
         "limit": limit,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 1b. Canonical outcome list — see backend/outcomes.py
+# ---------------------------------------------------------------------------
+
+@router.get("/api/analysis/outcomes")
+async def list_outcomes():
+    return {
+        "outcomes": [{"value": k, "description": v} for k, v in DISPOSITION_MAP.items()],
+        "unanalysed_value": UNANALYSED_SENTINEL,
     }
 
 
@@ -362,10 +470,9 @@ async def update_analysis_prompt_compat(assistant_id: str, body: _LegacyUpdatePr
 # ---------------------------------------------------------------------------
 # 5. Real metrics aggregation
 # ---------------------------------------------------------------------------
-
-OUTCOME_SUCCESS = {
-    "Interested", "Callback", "Will do it Myself", "Already Purchased",
-}
+# OUTCOME_SUCCESS now imported from backend/outcomes.py — the previous local
+# set here used non-existent values ("Callback", "Already Purchased") and
+# omitted real ones ("Approved", "Enriched"); see that module's docstring.
 
 
 async def _compute_call_metrics(assistant_filter: dict, range: str) -> dict:
@@ -387,10 +494,14 @@ async def _compute_call_metrics(assistant_filter: dict, range: str) -> dict:
 
     def _date_query(start: datetime, end: datetime) -> dict:
         base: dict = dict(assistant_filter)
-        # call_start_time may be a datetime or ISO string
+        # call_start_time may be a datetime, an ISO string, OR a raw Unix-epoch
+        # float (the format bot.py itself writes) — the float case used to be
+        # missing here, silently excluding every record stored that way from
+        # both current- and previous-period metrics.
         base["$or"] = [
             {"call_start_time": {"$gte": start, "$lt": end}},
             {"call_start_time": {"$gte": start.isoformat(), "$lt": end.isoformat()}},
+            {"call_start_time": {"$gte": start.timestamp(), "$lt": end.timestamp()}},
         ]
         return base
 

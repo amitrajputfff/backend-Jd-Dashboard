@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
 
 try:
     from ..mongo import get_workflow_bots_col, next_sequence
@@ -19,6 +19,8 @@ try:
         WorkflowBotsListResponse,
     )
     from ..voice_catalog import DEFAULT_VOICE_ID, resolve_voice
+    from ..languages import DEFAULT_LANGUAGE, language_catalog_for_bot
+    from .lang_cache import warm_language_cache
     from . import auth
 except ImportError:
     from mongo import get_workflow_bots_col, next_sequence
@@ -30,6 +32,8 @@ except ImportError:
         WorkflowBotsListResponse,
     )
     from voice_catalog import DEFAULT_VOICE_ID, resolve_voice
+    from languages import DEFAULT_LANGUAGE, language_catalog_for_bot
+    from routers.lang_cache import warm_language_cache
     from routers import auth
 
 router = APIRouter()
@@ -57,7 +61,8 @@ def _doc_to_response(doc: dict) -> WorkflowBotResponse:
         status=doc.get("status", "Draft"),
         global_prompt=doc.get("global_prompt", ""),
         workflow=doc.get("workflow", {"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}}),
-        language=doc.get("language", "hindi"),
+        language=doc.get("language", DEFAULT_LANGUAGE),
+        multilingual_enabled=bool(doc.get("multilingual_enabled", False)),
         temperature=doc.get("temperature", 0.7),
         gemini_start_sensitivity=doc.get("gemini_start_sensitivity", "START_SENSITIVITY_LOW"),
         gemini_end_sensitivity=doc.get("gemini_end_sensitivity", "END_SENSITIVITY_HIGH"),
@@ -216,6 +221,7 @@ async def get_workflow_bot(workflow_bot_id: str):
 async def update_workflow_bot(
     workflow_bot_id: str,
     data: UpdateWorkflowBotRequest,
+    background_tasks: BackgroundTasks,
     authorization: Optional[str] = Header(default=None),
 ):
     col = get_workflow_bots_col()
@@ -233,6 +239,9 @@ async def update_workflow_bot(
     raw["updated_at"] = datetime.now(timezone.utc)
     await col.update_one({"workflow_bot_id": workflow_bot_id}, {"$set": raw})
     doc = await col.find_one({"workflow_bot_id": workflow_bot_id})
+    # Warm the SIP-runtime fixed-string translation cache in the background —
+    # see routers/lang_cache.py. No-ops immediately for hinglish/hindi.
+    background_tasks.add_task(warm_language_cache, "workflow", workflow_bot_id, doc)
     return _doc_to_response(doc)
 
 
@@ -332,7 +341,9 @@ async def get_workflow_bot_config(workflow_bot_id: str):
         interruption_sensitivity=doc.get("interruption_sensitivity") or "balanced",
         mute_during_closing=doc.get("mute_during_closing", True),
         workflow=doc.get("workflow", {"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}}),
-        language=doc.get("language", "hindi"),
+        language=doc.get("language", DEFAULT_LANGUAGE),
+        multilingual_enabled=bool(doc.get("multilingual_enabled", False)),
+        language_catalog=language_catalog_for_bot(bool(doc.get("multilingual_enabled", False))),
         temperature=doc.get("temperature", 0.7),
         gemini_start_sensitivity=doc.get("gemini_start_sensitivity", "START_SENSITIVITY_LOW"),
         gemini_end_sensitivity=doc.get("gemini_end_sensitivity", "END_SENSITIVITY_HIGH"),

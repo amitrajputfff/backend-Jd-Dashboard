@@ -70,6 +70,17 @@ def get_transcripts_col():
     return _get_client()["ai_lead_qualify"]["call_transcripts"]
 
 
+def get_lang_cache_col():
+    """Pre-translated fixed strings (greeting/nudge/closing/timeout/fillers) per
+    (bot_id, language) — see backend/lang_translate.py. Warmed on save by
+    update_assistant/update_workflow_bot; read directly by the bot runtime
+    (voicebot_nodcode_platform/bot_dev.py) via its own Mongo client against this
+    same server — same cross-service pattern call_transcripts already uses,
+    just a different DB/collection name, so no new network hop at call start.
+    """
+    return _get_client()["no_code_platform"]["lang_string_cache"]
+
+
 async def next_sequence(name: str) -> int:
     """Atomically increment and return the next integer for `name`."""
     doc = await get_counters_col().find_one_and_update(

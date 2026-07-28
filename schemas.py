@@ -8,6 +8,11 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
+try:
+    from .languages import DEFAULT_LANGUAGE
+except ImportError:
+    from languages import DEFAULT_LANGUAGE
+
 # Env-driven so a fresh assistant's default API URLs match the environment the
 # backend is running in (local dev vs a deployed server) without a code change.
 _MIS_API_BASE_DEFAULT = os.getenv("MIS_API_BASE", "http://192.168.8.67:8000")
@@ -80,7 +85,11 @@ class CreateAssistantRequest(BaseModel):
     timeout_message: Optional[str] = ""
 
     # Bot behaviour settings
-    language: Optional[str] = "hindi"
+    language: Optional[str] = DEFAULT_LANGUAGE
+    # Unlocks the 9 additional Sarvam-covered Indic languages in `language`
+    # beyond hinglish/hindi/english (see backend/languages.py LANG_CONFIGS /
+    # BASE_LANGUAGES). Off by default — matches today's behaviour exactly.
+    multilingual_enabled: Optional[bool] = False
     temperature: Optional[float] = 0.4
     gemini_start_sensitivity: Optional[str] = "START_SENSITIVITY_LOW"
     gemini_end_sensitivity: Optional[str] = "END_SENSITIVITY_HIGH"
@@ -168,6 +177,7 @@ class UpdateAssistantRequest(BaseModel):
     closing_instruction: Optional[str] = None
     timeout_message: Optional[str] = None
     language: Optional[str] = None
+    multilingual_enabled: Optional[bool] = None
     temperature: Optional[float] = None
     gemini_start_sensitivity: Optional[str] = None
     gemini_end_sensitivity: Optional[str] = None
@@ -279,6 +289,7 @@ class AssistantResponse(BaseModel):
 
     # Bot behaviour settings (stored in DB, used by bots at call start)
     language: str
+    multilingual_enabled: bool = False
     temperature: float
     gemini_start_sensitivity: str
     gemini_end_sensitivity: str
@@ -380,6 +391,15 @@ class BotConfig(BaseModel):
     mongo_db: Optional[str] = None
     # Bot behaviour settings
     language: str
+    multilingual_enabled: bool = False
+    # Every language this bot is allowed to resolve to (see
+    # backend/languages.py language_catalog_for_bot()) — restricted to
+    # BASE_LANGUAGES unless multilingual_enabled, so a bot with the toggle off
+    # can't accidentally be pushed into an unsupported language by a stray
+    # test-call param or an unexpected MIS meta.language value. Keyed by slug;
+    # each entry has name/sarvam/devanagari/notes (see resolve_call_language
+    # and build_system_prompt in voicebot_nodcode_platform/bot.py).
+    language_catalog: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     temperature: float
     gemini_start_sensitivity: str
     gemini_end_sensitivity: str
@@ -570,7 +590,8 @@ class CreateWorkflowBotRequest(BaseModel):
     workflow: Workflow
 
     # Voice / call settings — same field names as CreateAssistantRequest
-    language: Optional[str] = "hindi"
+    language: Optional[str] = DEFAULT_LANGUAGE
+    multilingual_enabled: Optional[bool] = False
     temperature: Optional[float] = 0.7
     gemini_start_sensitivity: Optional[str] = "START_SENSITIVITY_LOW"
     gemini_end_sensitivity: Optional[str] = "END_SENSITIVITY_HIGH"
@@ -620,6 +641,7 @@ class UpdateWorkflowBotRequest(BaseModel):
     global_prompt: Optional[str] = None
     workflow: Optional[Workflow] = None
     language: Optional[str] = None
+    multilingual_enabled: Optional[bool] = None
     temperature: Optional[float] = None
     gemini_start_sensitivity: Optional[str] = None
     gemini_end_sensitivity: Optional[str] = None
@@ -675,6 +697,7 @@ class WorkflowBotResponse(BaseModel):
     workflow: Dict[str, Any]      # raw graph — ReactFlow JSON
     # Voice / call settings
     language: str
+    multilingual_enabled: bool = False
     temperature: float
     gemini_start_sensitivity: str
     gemini_end_sensitivity: str
@@ -734,6 +757,9 @@ class WorkflowBotConfig(BaseModel):
     workflow: Dict[str, Any]
     # Voice / behaviour settings
     language: str
+    multilingual_enabled: bool = False
+    # See BotConfig.language_catalog — same purpose, same shape.
+    language_catalog: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     temperature: float
     gemini_start_sensitivity: str
     gemini_end_sensitivity: str

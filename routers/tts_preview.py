@@ -27,8 +27,10 @@ from pydantic import BaseModel, Field
 
 try:
     from ..voice_catalog import resolve_voice
+    from ..languages import LANG_CONFIGS
 except ImportError:
     from voice_catalog import resolve_voice
+    from languages import LANG_CONFIGS
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -39,11 +41,33 @@ INDIC_TTS_WS_URL = os.environ.get("INDIC_TTS_WS_URL", "ws://10.10.0.14:8404/ws")
 
 _DEFAULT_PREVIEW_TEXT = "नमस्ते जी, मैं Justdial से बात कर रही हूँ। यह आपकी आवाज़ का एक नमूना है।"
 
+# Per-language fallback sample — feeding the Hindi default text above through
+# a non-Hindi target_language_code would have Sarvam try to render Devanagari
+# script in another language's phonetics, which comes out garbled. Only
+# covers languages without a script overlap with Hindi; English/Hindi/Hinglish
+# use _DEFAULT_PREVIEW_TEXT as before.
+_PREVIEW_TEXT_BY_LANGUAGE: dict[str, str] = {
+    "bengali": "নমস্কার, আমি জাস্টডায়াল থেকে বলছি। এটি আপনার কণ্ঠস্বরের একটি নমুনা।",
+    "gujarati": "નમસ્તે, હું જસ્ટડાયલ તરફથી બોલી રહી છું. આ તમારા અવાજનો એક નમૂનો છે.",
+    "kannada": "ನಮಸ್ಕಾರ, ನಾನು ಜಸ್ಟ್‌ಡಯಲ್‌ನಿಂದ ಮಾತನಾಡುತ್ತಿದ್ದೇನೆ. ಇದು ನಿಮ್ಮ ಧ್ವನಿಯ ಒಂದು ಮಾದರಿ.",
+    "malayalam": "നമസ്കാരം, ഞാൻ ജസ്റ്റ്ഡയലിൽ നിന്ന് സംസാരിക്കുന്നു. ഇത് നിങ്ങളുടെ ശബ്ദത്തിന്റെ ഒരു സാമ്പിളാണ്.",
+    "marathi": "नमस्कार, मी जस्टडायलकडून बोलत आहे. हा तुमच्या आवाजाचा एक नमुना आहे.",
+    "odia": "ନମସ୍କାର, ମୁଁ ଜଷ୍ଟଡାଏଲରୁ କହୁଛି। ଏହା ଆପଣଙ୍କ ସ୍ୱରର ଏକ ନମୁନା।",
+    "punjabi": "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ, ਮੈਂ ਜਸਟਡਾਇਲ ਤੋਂ ਬੋਲ ਰਹੀ ਹਾਂ। ਇਹ ਤੁਹਾਡੀ ਆਵਾਜ਼ ਦਾ ਇੱਕ ਨਮੂਨਾ ਹੈ।",
+    "tamil": "வணக்கம், நான் ஜஸ்ட்டையல் இருந்து பேசுகிறேன். இது உங்கள் குரலின் ஒரு மாதிரி.",
+    "telugu": "నమస్కారం, నేను జస్ట్‌డయల్ నుండి మాట్లాడుతున్నాను. ఇది మీ వాయిస్ యొక్క నమూనా.",
+}
+
 
 class TTSPreviewRequest(BaseModel):
     voice_id: int
     text: str | None = None
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    # Language slug (e.g. "tamil") — same values as backend/languages.py's
+    # LANG_CONFIGS. Only affects the Sarvam path (IndicF5 voices are
+    # Devanagari-only regardless, so previewing one always speaks Hindi script).
+    # None/unknown falls back to hi-IN, today's only preview language.
+    language: str | None = None
 
 
 def _pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
@@ -56,13 +80,13 @@ def _pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
-async def _synthesize_sarvam(text: str, speaker: str, speed: float) -> bytes:
+async def _synthesize_sarvam(text: str, speaker: str, speed: float, sarvam_lang_code: str = "hi-IN") -> bytes:
     if not SARVAM_API_KEY:
         raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured on this server.")
 
     payload = {
         "text": text,
-        "target_language_code": "hi-IN",
+        "target_language_code": sarvam_lang_code,
         "speaker": speaker,
         "sample_rate": 24000,
         "enable_preprocessing": True,
@@ -133,11 +157,15 @@ async def _synthesize_indicf5(text: str, speaker: str, speed: float) -> bytes:
 async def preview_voice(body: TTSPreviewRequest):
     """Synthesize a short real audio sample for the given voice_id. Returns raw WAV bytes."""
     voice = resolve_voice(body.voice_id)
-    text = (body.text or _DEFAULT_PREVIEW_TEXT).strip()[:300]
+    lang_entry = LANG_CONFIGS.get(body.language or "", {})
+    sarvam_lang_code = lang_entry.get("sarvam", "hi-IN")
+    default_text = _PREVIEW_TEXT_BY_LANGUAGE.get(body.language or "", _DEFAULT_PREVIEW_TEXT)
+    text = (body.text or default_text).strip()[:300]
 
     if voice["provider"] == "sarvam":
-        wav_bytes = await _synthesize_sarvam(text, voice["speaker"], body.speed)
+        wav_bytes = await _synthesize_sarvam(text, voice["speaker"], body.speed, sarvam_lang_code)
     else:
+        # IndicF5 only ever speaks Devanagari script — language selection doesn't apply.
         wav_bytes = await _synthesize_indicf5(text, voice["speaker"], body.speed)
 
     return Response(content=wav_bytes, media_type="audio/wav")
