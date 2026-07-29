@@ -86,6 +86,7 @@ def _doc_to_response(doc: dict) -> WorkflowBotResponse:
         inactivity_end_phrase=doc.get("inactivity_end_phrase", "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद."),
         lang_notes=doc.get("lang_notes", ""),
         analysis_prompt=doc.get("analysis_prompt", ""),
+        analysis_prompt_id=doc.get("analysis_prompt_id"),
         tts_provider_id=doc.get("tts_provider_id", 3),
         tts_model_id=doc.get("tts_model_id", 1),
         voice_id=doc.get("voice_id", DEFAULT_VOICE_ID),
@@ -145,6 +146,7 @@ def _new_doc(data: CreateWorkflowBotRequest, wid: int) -> dict:
         "inactivity_end_phrase": data.inactivity_end_phrase or "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद.",
         "lang_notes": data.lang_notes or "",
         "analysis_prompt": data.analysis_prompt or "",
+        "analysis_prompt_id": data.analysis_prompt_id,
         "tts_provider_id": data.tts_provider_id if data.tts_provider_id is not None else 3,
         "tts_model_id": data.tts_model_id if data.tts_model_id is not None else 1,
         "voice_id": data.voice_id if data.voice_id is not None else DEFAULT_VOICE_ID,
@@ -373,4 +375,5 @@ async def get_workflow_bot_config(workflow_bot_id: str):
         inactivity_end_phrase=doc.get("inactivity_end_phrase", "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद."),
         lang_notes=doc.get("lang_notes", ""),
         analysis_prompt=doc.get("analysis_prompt", ""),
+        analysis_prompt_id=doc.get("analysis_prompt_id"),
     )

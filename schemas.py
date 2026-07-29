@@ -114,8 +114,14 @@ class CreateAssistantRequest(BaseModel):
     inactivity_nudge_secs: Optional[float] = 10.0
     inactivity_close_secs: Optional[float] = 5.0
 
-    # Analysis prompt
+    # Analysis prompt — DEAD FIELD, never read by the worker; see analysis_prompt_id below.
     analysis_prompt: Optional[str] = ""
+    # Which no_code_platform.analysis_prompts doc analyzes this agent's calls.
+    # None = use whichever prompt has is_default=True. Assignment is written via
+    # PUT /api/analysis/prompts/{prompt_id}/assistants, NOT this create/update
+    # endpoint (see routers/analysis.py — that endpoint's model_dump(exclude_none=True)
+    # would silently drop an attempt to clear this field back to None here).
+    analysis_prompt_id: Optional[str] = None
 
     # Inactivity phrases
     inactivity_phrase: Optional[str] = "क्या आप अभी line पर हैं?"
@@ -209,8 +215,11 @@ class UpdateAssistantRequest(BaseModel):
     inactivity_nudge_secs: Optional[float] = None
     inactivity_close_secs: Optional[float] = None
 
-    # Analysis prompt
+    # Analysis prompt — DEAD FIELD, never read by the worker; see analysis_prompt_id below.
     analysis_prompt: Optional[str] = None
+    # See CreateAssistantRequest.analysis_prompt_id — same field, same caveat
+    # about needing the dedicated assignment endpoint to clear it to None.
+    analysis_prompt_id: Optional[str] = None
 
     # Inactivity phrases
     inactivity_phrase: Optional[str] = None
@@ -322,8 +331,9 @@ class AssistantResponse(BaseModel):
     inactivity_nudge_secs: float
     inactivity_close_secs: float
 
-    # Analysis prompt
+    # Analysis prompt — DEAD FIELD, never read by the worker; see analysis_prompt_id below.
     analysis_prompt: str
+    analysis_prompt_id: Optional[str] = None
 
     # Inactivity phrases
     inactivity_phrase: str
@@ -445,8 +455,15 @@ class BotConfig(BaseModel):
     inactivity_first_nudge_gap_secs: float = 4.0
     inactivity_nudge_secs: float = 10.0
     inactivity_close_secs: float = 5.0
-    # Analysis prompt
+    # Analysis prompt — DEAD FIELD, never read by the worker; see analysis_prompt_id below.
     analysis_prompt: str = ""
+    # Which no_code_platform.analysis_prompts doc analyzes this agent's calls.
+    # Not actually consumed by the bot at call time — callback_worker's own
+    # prompt_store.py looks this field up directly from Mongo by assistant_id
+    # when analysis runs, independent of this bot-config response. Included
+    # here only so the value is visible/inspectable alongside the rest of an
+    # agent's resolved config.
+    analysis_prompt_id: Optional[str] = None
     # Inactivity phrases
     inactivity_phrase: str = "क्या आप अभी line पर हैं?"
     inactivity_end_phrase: str = "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद."
@@ -626,7 +643,8 @@ class CreateWorkflowBotRequest(BaseModel):
     inactivity_phrase: Optional[str] = "क्या आप अभी line पर हैं?"
     inactivity_end_phrase: Optional[str] = "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद."
     lang_notes: Optional[str] = ""
-    analysis_prompt: Optional[str] = ""
+    analysis_prompt: Optional[str] = ""  # DEAD FIELD, never read by the worker; see analysis_prompt_id
+    analysis_prompt_id: Optional[str] = None
 
     # TTS provider/model/voice — same field names/defaults as CreateAssistantRequest,
     # persisted and resolved via voice_catalog.resolve_voice() at call start.
@@ -676,7 +694,8 @@ class UpdateWorkflowBotRequest(BaseModel):
     inactivity_phrase: Optional[str] = None
     inactivity_end_phrase: Optional[str] = None
     lang_notes: Optional[str] = None
-    analysis_prompt: Optional[str] = None
+    analysis_prompt: Optional[str] = None  # DEAD FIELD, never read by the worker; see analysis_prompt_id
+    analysis_prompt_id: Optional[str] = None
 
     # TTS provider/model/voice
     tts_provider_id: Optional[int] = None
@@ -733,7 +752,8 @@ class WorkflowBotResponse(BaseModel):
     inactivity_phrase: str
     inactivity_end_phrase: str
     lang_notes: str
-    analysis_prompt: str
+    analysis_prompt: str  # DEAD FIELD, never read by the worker; see analysis_prompt_id
+    analysis_prompt_id: Optional[str] = None
     # TTS provider/model/voice — real, sourced from the stored doc (see voice_catalog.py)
     tts_provider_id: int = 3
     tts_model_id: int = 1
@@ -796,7 +816,10 @@ class WorkflowBotConfig(BaseModel):
     inactivity_phrase: str = "क्या आप अभी line पर हैं?"
     inactivity_end_phrase: str = "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद."
     lang_notes: str = ""
-    analysis_prompt: str = ""
+    analysis_prompt: str = ""  # DEAD FIELD, never read by the worker; see analysis_prompt_id
+    # Same semantics as BotConfig.analysis_prompt_id above — not consumed here
+    # at call time, only inspectable.
+    analysis_prompt_id: Optional[str] = None
     # TTS provider/voice — resolved from voice_id via voice_catalog.resolve_voice(),
     # same semantics as BotConfig.tts_provider/tts_voice above.
     tts_provider: str = "justdial"

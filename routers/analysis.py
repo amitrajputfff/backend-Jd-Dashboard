@@ -26,10 +26,10 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 try:
-    from ..mongo import get_transcripts_col, get_assistants_col, get_analysis_prompts_col
+    from ..mongo import get_transcripts_col, get_assistants_col, get_analysis_prompts_col, get_workflow_bots_col
     from ..outcomes import DISPOSITION_MAP, OUTCOME_SUCCESS, UNANALYSED_SENTINEL
 except ImportError:
-    from mongo import get_transcripts_col, get_assistants_col, get_analysis_prompts_col
+    from mongo import get_transcripts_col, get_assistants_col, get_analysis_prompts_col, get_workflow_bots_col
     from outcomes import DISPOSITION_MAP, OUTCOME_SUCCESS, UNANALYSED_SENTINEL
 
 router = APIRouter()
@@ -416,16 +416,25 @@ async def test_analysis_prompt(body: TestAnalysisRequest):
 import uuid as _uuid
 
 
-def _prompt_doc_out(doc: dict) -> dict:
-    """Shape a prompt document for API responses."""
+def _prompt_doc_out(doc: dict, assignments: Optional[dict] = None) -> dict:
+    """Shape a prompt document for API responses.
+
+    assignments, when given, is the {prompt_id: [{"assistant_id"/"workflow_bot_id",
+    "name", "bot_type"}]} map built by _assignments_by_prompt_id() — batched
+    across all prompts to avoid an N+1 query per prompt in list_analysis_prompts.
+    """
+    pid = doc.get("prompt_id", str(doc["_id"]))
+    assigned = (assignments or {}).get(pid, [])
     return {
-        "prompt_id": doc.get("prompt_id", str(doc["_id"])),
+        "prompt_id": pid,
         "name": doc.get("name", ""),
         "description": doc.get("description", ""),
         "analysis_prompt": doc.get("analysis_prompt", ""),
         "is_default": doc.get("is_default", False),
         "created_at": doc.get("created_at", ""),
         "updated_at": doc.get("updated_at", ""),
+        "assistant_ids": [a["id"] for a in assigned],
+        "assistant_count": len(assigned),
     }
 
 
@@ -438,6 +447,33 @@ async def _get_default_prompt_doc() -> Optional[dict]:
     return doc
 
 
+async def _assignments_by_prompt_id(prompt_ids: Optional[list[str]] = None) -> dict[str, list[dict]]:
+    """Batched lookup of every agent (assistant or workflow bot) currently
+    assigned to each prompt_id — one query per collection, not one per prompt.
+    `prompt_ids`, when given, restricts the result to just those ids (still a
+    single query); omit to fetch every assignment that exists.
+    """
+    match: dict = {"analysis_prompt_id": {"$ne": None}}
+    if prompt_ids is not None:
+        match = {"analysis_prompt_id": {"$in": prompt_ids}}
+
+    result: dict[str, list[dict]] = {}
+
+    assistants_col = get_assistants_col()
+    async for a in assistants_col.find(match, {"assistant_id": 1, "name": 1, "analysis_prompt_id": 1}):
+        pid = a.get("analysis_prompt_id")
+        if pid:
+            result.setdefault(pid, []).append({"id": a.get("assistant_id"), "name": a.get("name", ""), "bot_type": "assistant"})
+
+    workflow_bots_col = get_workflow_bots_col()
+    async for w in workflow_bots_col.find(match, {"workflow_bot_id": 1, "name": 1, "analysis_prompt_id": 1}):
+        pid = w.get("analysis_prompt_id")
+        if pid:
+            result.setdefault(pid, []).append({"id": w.get("workflow_bot_id"), "name": w.get("name", ""), "bot_type": "workflow"})
+
+    return result
+
+
 # --- List all prompts ---
 
 @router.get("/api/analysis/prompts")
@@ -445,7 +481,8 @@ async def list_analysis_prompts():
     col = get_analysis_prompts_col()
     cursor = col.find({}, {"analysis_prompt": 0}).sort("created_at", 1)
     docs = await cursor.to_list(length=100)
-    return [_prompt_doc_out({**d, "analysis_prompt": ""}) for d in docs]
+    assignments = await _assignments_by_prompt_id()
+    return [_prompt_doc_out({**d, "analysis_prompt": ""}, assignments) for d in docs]
 
 
 # --- Get default prompt (must be registered before /{prompt_id}) ---
@@ -455,7 +492,8 @@ async def get_default_analysis_prompt():
     doc = await _get_default_prompt_doc()
     if doc is None:
         raise HTTPException(status_code=404, detail="No analysis prompts found — run the seeder")
-    return _prompt_doc_out(doc)
+    assignments = await _assignments_by_prompt_id([doc.get("prompt_id", str(doc["_id"]))])
+    return _prompt_doc_out(doc, assignments)
 
 
 # --- Get specific prompt ---
@@ -466,10 +504,33 @@ async def get_analysis_prompt_by_id(prompt_id: str):
     doc = await col.find_one({"prompt_id": prompt_id})
     if doc is None:
         raise HTTPException(status_code=404, detail=f"Prompt {prompt_id!r} not found")
-    return _prompt_doc_out(doc)
+    assignments = await _assignments_by_prompt_id([prompt_id])
+    return _prompt_doc_out(doc, assignments)
 
 
 # --- Create prompt ---
+
+_FALLBACK_REQUIRED_PLACEHOLDERS = ("transcript", "qualification_questions", "disposition_options", "dynamic_notes")
+
+
+def _validate_prompt_placeholders(text: str) -> list[str]:
+    """Non-blocking check — a blank/missing placeholder is never a hard error
+    (an empty prompt legitimately means "use the canonical fallback", and a
+    saved prompt missing a required placeholder gets auto-repaired at render
+    time, see prompt_render.py) — just a warning surfaced to the editor UI.
+    """
+    if not text.strip():
+        return []
+    try:
+        _WORKER_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "voicebot_nodcode_platform")
+        import sys
+        if _WORKER_ROOT not in sys.path:
+            sys.path.insert(0, _WORKER_ROOT)
+        from callback_worker.canonical_prompt import REQUIRED_PLACEHOLDERS
+    except Exception:
+        REQUIRED_PLACEHOLDERS = _FALLBACK_REQUIRED_PLACEHOLDERS
+    return [name for name in REQUIRED_PLACEHOLDERS if "{" + name + "}" not in text]
+
 
 class CreatePromptRequest(BaseModel):
     name: str
@@ -496,7 +557,7 @@ async def create_analysis_prompt(body: CreatePromptRequest):
         "updated_at": now,
     }
     await col.insert_one(doc)
-    return _prompt_doc_out(doc)
+    return {**_prompt_doc_out(doc), "warnings": _validate_prompt_placeholders(body.analysis_prompt)}
 
 
 # --- Update prompt ---
@@ -529,17 +590,151 @@ async def update_analysis_prompt_by_id(prompt_id: str, body: UpdatePromptRequest
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail=f"Prompt {prompt_id!r} not found")
     doc = await col.find_one({"prompt_id": prompt_id})
-    return _prompt_doc_out(doc)
+    warnings = _validate_prompt_placeholders(doc.get("analysis_prompt", ""))
+    return {**_prompt_doc_out(doc), "warnings": warnings}
 
 
 # --- Delete prompt ---
 
-@router.delete("/api/analysis/prompts/{prompt_id}", status_code=204)
+@router.delete("/api/analysis/prompts/{prompt_id}")
 async def delete_analysis_prompt(prompt_id: str):
     col = get_analysis_prompts_col()
-    result = await col.delete_one({"prompt_id": prompt_id})
-    if result.deleted_count == 0:
+    doc = await col.find_one({"prompt_id": prompt_id})
+    if doc is None:
         raise HTTPException(status_code=404, detail=f"Prompt {prompt_id!r} not found")
+    if doc.get("is_default"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete the default prompt — set another prompt as default first.",
+        )
+
+    # Unassign every agent pointing at this prompt BEFORE deleting it, so no
+    # assistant/workflow-bot is left with a dangling analysis_prompt_id.
+    # (resolve_prompt_template degrades gracefully to the default prompt on a
+    # dangling id, but leaving one around is still a hygiene bug worth avoiding.)
+    unassign_filter = {"analysis_prompt_id": prompt_id}
+    assistants_result = await get_assistants_col().update_many(unassign_filter, {"$unset": {"analysis_prompt_id": ""}})
+    workflow_result = await get_workflow_bots_col().update_many(unassign_filter, {"$unset": {"analysis_prompt_id": ""}})
+    unassigned = assistants_result.modified_count + workflow_result.modified_count
+
+    await col.delete_one({"prompt_id": prompt_id})
+    return {"deleted": True, "prompt_id": prompt_id, "unassigned": unassigned}
+
+
+# ---------------------------------------------------------------------------
+# 4a. Prompt <-> agent assignment — one prompt per agent (analysis_prompt_id
+#     lives on the assistant/workflow_bot doc; None = use the default prompt).
+#     Deliberately NOT routed through PUT /api/assistants/{id} or
+#     PUT /api/workflow-bots/{id} — both do
+#     data.model_dump(exclude_none=True), which silently drops an attempt to
+#     clear analysis_prompt_id back to None.
+# ---------------------------------------------------------------------------
+
+async def _validate_agent_ids(ids: list[str]) -> None:
+    """404 listing any id that isn't a real assistant or workflow bot."""
+    if not ids:
+        return
+    assistants_col = get_assistants_col()
+    workflow_bots_col = get_workflow_bots_col()
+    found_assistants = {
+        a["assistant_id"] async for a in assistants_col.find({"assistant_id": {"$in": ids}}, {"assistant_id": 1})
+    }
+    found_workflow = {
+        w["workflow_bot_id"] async for w in workflow_bots_col.find({"workflow_bot_id": {"$in": ids}}, {"workflow_bot_id": 1})
+    }
+    unknown = set(ids) - found_assistants - found_workflow
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown agent id(s): {sorted(unknown)}")
+
+
+@router.get("/api/analysis/prompts/{prompt_id}/assistants")
+async def get_prompt_assistants(prompt_id: str):
+    col = get_analysis_prompts_col()
+    if await col.find_one({"prompt_id": prompt_id}, {"_id": 1}) is None:
+        raise HTTPException(status_code=404, detail=f"Prompt {prompt_id!r} not found")
+    assignments = await _assignments_by_prompt_id([prompt_id])
+    return {"prompt_id": prompt_id, "assistants": assignments.get(prompt_id, [])}
+
+
+class SetPromptAssistantsRequest(BaseModel):
+    assistant_ids: list[str] = []
+
+
+@router.put("/api/analysis/prompts/{prompt_id}/assistants")
+async def set_prompt_assistants(prompt_id: str, body: SetPromptAssistantsRequest):
+    col = get_analysis_prompts_col()
+    if await col.find_one({"prompt_id": prompt_id}, {"_id": 1}) is None:
+        raise HTTPException(status_code=404, detail=f"Prompt {prompt_id!r} not found")
+
+    await _validate_agent_ids(body.assistant_ids)
+
+    assistants_col = get_assistants_col()
+    workflow_bots_col = get_workflow_bots_col()
+    now = datetime.now(timezone.utc)
+
+    # One-prompt-per-agent falls out naturally: $set overwrites whatever this
+    # agent was previously assigned to. Unassign every agent CURRENTLY on this
+    # prompt but not in the new list, then assign everyone in the new list.
+    unassign_filter = {"analysis_prompt_id": prompt_id, "assistant_id": {"$nin": body.assistant_ids}}
+    await assistants_col.update_many(unassign_filter, {"$unset": {"analysis_prompt_id": ""}})
+    unassign_filter_wf = {"analysis_prompt_id": prompt_id, "workflow_bot_id": {"$nin": body.assistant_ids}}
+    await workflow_bots_col.update_many(unassign_filter_wf, {"$unset": {"analysis_prompt_id": ""}})
+
+    if body.assistant_ids:
+        await assistants_col.update_many(
+            {"assistant_id": {"$in": body.assistant_ids}},
+            {"$set": {"analysis_prompt_id": prompt_id, "updated_at": now}},
+        )
+        await workflow_bots_col.update_many(
+            {"workflow_bot_id": {"$in": body.assistant_ids}},
+            {"$set": {"analysis_prompt_id": prompt_id, "updated_at": now}},
+        )
+
+    assignments = await _assignments_by_prompt_id([prompt_id])
+    return {"prompt_id": prompt_id, "assistants": assignments.get(prompt_id, [])}
+
+
+@router.get("/api/analysis/prompt-assignments")
+async def list_prompt_assignments(organization_id: str = Query(...)):
+    """Every agent in this org, with whichever prompt currently analyzes its
+    calls (None = falls back to the org default) — powers the assignment UI's
+    "assigned elsewhere" warning and "N unassigned -> Default" summary."""
+    prompts_col = get_analysis_prompts_col()
+    prompt_names = {
+        p["prompt_id"]: p.get("name", "")
+        async for p in prompts_col.find({}, {"prompt_id": 1, "name": 1})
+    }
+
+    result: list[dict] = []
+    assistants_col = get_assistants_col()
+    async for a in assistants_col.find(
+        {"organization_id": organization_id, "is_deleted": {"$ne": True}},
+        {"assistant_id": 1, "name": 1, "analysis_prompt_id": 1},
+    ):
+        pid = a.get("analysis_prompt_id")
+        result.append({
+            "assistant_id": a.get("assistant_id"),
+            "name": a.get("name", ""),
+            "bot_type": "assistant",
+            "analysis_prompt_id": pid,
+            "prompt_name": prompt_names.get(pid) if pid else None,
+        })
+
+    workflow_bots_col = get_workflow_bots_col()
+    async for w in workflow_bots_col.find(
+        {"organization_id": organization_id, "is_deleted": {"$ne": True}},
+        {"workflow_bot_id": 1, "name": 1, "analysis_prompt_id": 1},
+    ):
+        pid = w.get("analysis_prompt_id")
+        result.append({
+            "assistant_id": w.get("workflow_bot_id"),
+            "name": w.get("name", ""),
+            "bot_type": "workflow",
+            "analysis_prompt_id": pid,
+            "prompt_name": prompt_names.get(pid) if pid else None,
+        })
+
+    return {"assignments": result}
 
 
 # ---------------------------------------------------------------------------
