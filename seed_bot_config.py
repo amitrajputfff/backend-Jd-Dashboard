@@ -199,7 +199,9 @@ FUNCTIONS = [
 # extraction steps, and the full output schema — identical to what analysis.py uses at
 # runtime. Runtime placeholders: {transcript}, {muted_transcript},
 # {qualification_questions}, {disposition_options}, {current_datetime},
-# {dynamic_notes}, {num_questions}, {agent_inference_section}.
+# {dynamic_notes}, {num_questions}, {agent_inference_section}, {hot_lead_step2c},
+# {hot_lead_step3_keys} (the last two drive the hot-lead business-intent flow —
+# omitting them from a custom prompt means business_intent/b2b_user come back blank).
 import sys as _sys
 import os as _os
 _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), '..', 'voicebot_nodcode_platform'))
