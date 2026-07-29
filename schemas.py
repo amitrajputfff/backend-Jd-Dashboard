@@ -711,6 +711,12 @@ class CreateWorkflowBotRequest(BaseModel):
     tts_provider_id: Optional[int] = None
     tts_model_id: Optional[int] = None
     voice_id: Optional[int] = 12
+    # Was entirely missing from this model even though _new_doc() (routers/
+    # workflow_bots.py) unconditionally reads data.tts_sample_rate — every
+    # POST /api/workflow-bots call raised AttributeError and 500'd. Found
+    # while testing the fields below; fixed here since it blocks the same
+    # create path.
+    tts_sample_rate: Optional[int] = None
 
     # How easily a caller can interrupt the bot mid-sentence
     interruption_sensitivity: Optional[str] = "balanced"
@@ -719,6 +725,25 @@ class CreateWorkflowBotRequest(BaseModel):
     # (No greeting-mute equivalent here — a workflow bot's opening line is the
     # start node's PM-authored first_message, not a canned deterministic phrase.)
     mute_during_closing: Optional[bool] = True
+
+    # Voice tab — same previously-silent-drop bug as CreateAssistantRequest.
+    speech_speed: Optional[float] = 1.0
+    pitch: Optional[str] = "0%"
+
+    # Advanced Settings — same previously-silent-drop bug.
+    call_recording: Optional[bool] = True
+    voice_activity_detection: Optional[bool] = True
+    barge_in: Optional[bool] = True
+    noise_suppression: Optional[bool] = True
+    silence_timeout: Optional[int] = 15
+    cutoff_seconds: Optional[int] = 5
+    ideal_time_seconds: Optional[int] = 30
+    is_transferable: Optional[bool] = False
+    transfer_number: Optional[str] = None
+
+    # Memory — same previously-silent-drop bug.
+    memory_enabled: Optional[bool] = False
+    max_memory_retrieval: Optional[int] = 5
 
     # Lock flag — same meaning/enforcement as Assistant.is_locked
     is_locked: Optional[bool] = False
@@ -768,6 +793,25 @@ class UpdateWorkflowBotRequest(BaseModel):
 
     # Whether to mute the caller's mic while the bot speaks its closing line.
     mute_during_closing: Optional[bool] = None
+
+    # Voice tab — same previously-silent-drop bug as UpdateAssistantRequest.
+    speech_speed: Optional[float] = None
+    pitch: Optional[str] = None
+
+    # Advanced Settings — same previously-silent-drop bug.
+    call_recording: Optional[bool] = None
+    voice_activity_detection: Optional[bool] = None
+    barge_in: Optional[bool] = None
+    noise_suppression: Optional[bool] = None
+    silence_timeout: Optional[int] = None
+    cutoff_seconds: Optional[int] = None
+    ideal_time_seconds: Optional[int] = None
+    is_transferable: Optional[bool] = None
+    transfer_number: Optional[str] = None
+
+    # Memory — same previously-silent-drop bug.
+    memory_enabled: Optional[bool] = None
+    max_memory_retrieval: Optional[int] = None
 
     # Lock flag — only admins should flip this
     is_locked: Optional[bool] = None
@@ -821,6 +865,19 @@ class WorkflowBotResponse(BaseModel):
     tts_sample_rate: Optional[int] = None
     interruption_sensitivity: str = "balanced"
     mute_during_closing: bool = True
+    speech_speed: float = 1.0
+    pitch: str = "0%"
+    call_recording: bool = True
+    voice_activity_detection: bool = True
+    barge_in: bool = True
+    noise_suppression: bool = True
+    silence_timeout: int = 15
+    cutoff_seconds: int = 5
+    ideal_time_seconds: int = 30
+    is_transferable: bool = False
+    transfer_number: Optional[str] = None
+    memory_enabled: bool = False
+    max_memory_retrieval: int = 5
     # Lock — True means live in production; edits and deletes are rejected
     # without the owning user's password (see update_workflow_bot).
     is_locked: bool = False
@@ -892,3 +949,19 @@ class WorkflowBotConfig(BaseModel):
     interruption_sensitivity: str = "balanced"
     # Whether to mute the caller's mic while the bot speaks its closing line.
     mute_during_closing: bool = True
+    # Voice tab — same semantics as BotConfig.speech_speed/pitch above.
+    speech_speed: float = 1.0
+    pitch: str = "0%"
+    # Whether this call's audio gets recorded — same semantics as
+    # BotConfig.call_recording above.
+    call_recording: bool = True
+    voice_activity_detection: bool = True
+    barge_in: bool = True
+    noise_suppression: bool = True
+    silence_timeout: int = 15
+    cutoff_seconds: int = 5
+    ideal_time_seconds: int = 30
+    is_transferable: bool = False
+    transfer_number: Optional[str] = None
+    memory_enabled: bool = False
+    max_memory_retrieval: int = 5
