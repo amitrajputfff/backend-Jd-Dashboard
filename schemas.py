@@ -156,6 +156,27 @@ class CreateAssistantRequest(BaseModel):
     mute_during_greeting: Optional[bool] = True
     mute_during_closing: Optional[bool] = True
 
+    # Voice tab — were previously silently dropped by this model (unknown
+    # fields aren't validation errors, they're just ignored), so the dashboard
+    # showed them as editable but nothing was ever actually saved.
+    speech_speed: Optional[float] = 1.0
+    pitch: Optional[str] = "0%"
+
+    # Advanced Settings — same previously-silent-drop bug.
+    call_recording: Optional[bool] = True
+    voice_activity_detection: Optional[bool] = True
+    barge_in: Optional[bool] = True
+    noise_suppression: Optional[bool] = True
+    silence_timeout: Optional[int] = 15
+    cutoff_seconds: Optional[int] = 5
+    ideal_time_seconds: Optional[int] = 30
+    is_transferable: Optional[bool] = False
+    transfer_number: Optional[str] = None
+
+    # Memory — same previously-silent-drop bug.
+    memory_enabled: Optional[bool] = False
+    max_memory_retrieval: Optional[int] = 5
+
     # Accepted but ignored — AI-create flow extras
     language_id: Optional[int] = None
     stt_model_id: Optional[int] = None
@@ -243,6 +264,27 @@ class UpdateAssistantRequest(BaseModel):
     # Whether to mute the caller's mic while the bot speaks its greeting / closing lines.
     mute_during_greeting: Optional[bool] = None
     mute_during_closing: Optional[bool] = None
+
+    # Voice tab — were previously silently dropped by this model (unknown
+    # fields aren't validation errors, they're just ignored), so editing
+    # these and clicking Update never actually persisted the change.
+    speech_speed: Optional[float] = None
+    pitch: Optional[str] = None
+
+    # Advanced Settings — same previously-silent-drop bug.
+    call_recording: Optional[bool] = None
+    voice_activity_detection: Optional[bool] = None
+    barge_in: Optional[bool] = None
+    noise_suppression: Optional[bool] = None
+    silence_timeout: Optional[int] = None
+    cutoff_seconds: Optional[int] = None
+    ideal_time_seconds: Optional[int] = None
+    is_transferable: Optional[bool] = None
+    transfer_number: Optional[str] = None
+
+    # Memory — same previously-silent-drop bug.
+    memory_enabled: Optional[bool] = None
+    max_memory_retrieval: Optional[int] = None
 
     # Present only when the existing doc has is_locked=True — required to
     # unlock it or to change ANY other field while it stays locked (see
@@ -361,7 +403,7 @@ class AssistantResponse(BaseModel):
     interruption_level: str = "Low"
     cutoff_seconds: int = 5
     ideal_time_seconds: int = 30
-    call_recording: bool = False
+    call_recording: bool = True
     barge_in: bool = True
     voice_activity_detection: bool = True
     noise_suppression: bool = True
@@ -442,6 +484,24 @@ class BotConfig(BaseModel):
     # Whether to mute the caller's mic while the bot speaks its greeting / closing lines.
     mute_during_greeting: bool = True
     mute_during_closing: bool = True
+    # Voice tab — speech rate multiplier, threaded into Sarvam's `pace` /
+    # IndicF5's `speed` at TTS construction time (see webrtc_bot.py).
+    speech_speed: float = 1.0
+    pitch: str = "0%"
+    # Whether this call's audio gets recorded at all — see
+    # webrtc_call_persistence.py's setup_call_recording(). Defaults True to
+    # match the previously-unconditional (always recording) behavior.
+    call_recording: bool = True
+    voice_activity_detection: bool = True
+    barge_in: bool = True
+    noise_suppression: bool = True
+    silence_timeout: int = 15
+    cutoff_seconds: int = 5
+    ideal_time_seconds: int = 30
+    is_transferable: bool = False
+    transfer_number: Optional[str] = None
+    memory_enabled: bool = False
+    max_memory_retrieval: int = 5
     # Sarvam STT / VAD tuning
     sarvam_min_rms: int = 600
     sarvam_min_speech_ms: int = 500
