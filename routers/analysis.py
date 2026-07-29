@@ -19,6 +19,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import aiohttp
 from bson import ObjectId
 from bson.errors import InvalidId
 from fastapi import APIRouter, HTTPException, Query
@@ -293,6 +294,118 @@ async def rerun_analysis(call_id: str, body: RerunRequest = RerunRequest()):
 
     from fastapi.responses import JSONResponse
     return JSONResponse(status_code=202, content={"status": "queued", "call_id": call_id})
+
+
+# ---------------------------------------------------------------------------
+# 3b. Dry-run test — try a candidate prompt against a real call's transcript
+#     WITHOUT writing anything back (no tagged, no analysis mutation, no
+#     callback). Lets a user iterate on a prompt before saving/assigning it.
+#     Never calls analyze_and_store() — that writes to Mongo and can fire the
+#     MIS callback; this endpoint only ever reads.
+# ---------------------------------------------------------------------------
+
+class TestAnalysisRequest(BaseModel):
+    call_id: Optional[str] = None
+    lead_id: Optional[str] = None
+    prompt_id: Optional[str] = None
+    # Raw, possibly-unsaved prompt text — wins over prompt_id. An explicit ""
+    # is a deliberate request to test the canonical fallback, so it's
+    # distinguished from "not provided" via `analysis_prompt is not None`.
+    analysis_prompt: Optional[str] = None
+    model: Optional[str] = None
+
+
+@router.post("/api/analysis/test")
+async def test_analysis_prompt(body: TestAnalysisRequest):
+    if not body.call_id and not body.lead_id:
+        raise HTTPException(status_code=400, detail="Provide call_id or lead_id")
+
+    col = get_transcripts_col()
+
+    doc = None
+    if body.call_id:
+        if len(body.call_id) == 24:
+            try:
+                doc = await col.find_one({"_id": ObjectId(body.call_id)})
+            except Exception:
+                pass
+        if doc is None:
+            doc = await col.find_one({"call_id": body.call_id})
+        if doc is None:
+            raise HTTPException(status_code=404, detail=f"Call {body.call_id!r} not found")
+    else:
+        doc = await col.find_one(_search_clause(body.lead_id), sort=[("call_start_time", -1)])
+        if doc is None:
+            raise HTTPException(status_code=404, detail=f"No call found for lead_id/phone {body.lead_id!r}")
+
+    # Resolve which prompt text to test — inline text (even "") > prompt_id >
+    # this org's default prompt > canonical (render_analysis_prompt's own
+    # fallback when prompt_template is None). Per-agent assignment
+    # (analysis_prompt_id on the doc's assistant) is layered in once that
+    # exists — until then, every call tests against the same default/canonical
+    # chain a real analysis would use for an unassigned agent.
+    prompt_template: Optional[str] = None
+    prompt_source = "canonical"
+    if body.analysis_prompt is not None:
+        prompt_template = body.analysis_prompt
+        prompt_source = "inline"
+    elif body.prompt_id:
+        prompts_col = get_analysis_prompts_col()
+        prompt_doc = await prompts_col.find_one({"prompt_id": body.prompt_id})
+        if prompt_doc is None:
+            raise HTTPException(status_code=404, detail=f"Prompt {body.prompt_id!r} not found")
+        prompt_template = prompt_doc.get("analysis_prompt", "")
+        prompt_source = f"prompt_id:{body.prompt_id}"
+    else:
+        default_doc = await _get_default_prompt_doc()
+        if default_doc is not None:
+            prompt_template = default_doc.get("analysis_prompt", "")
+            prompt_source = f"default:{default_doc.get('prompt_id', str(default_doc.get('_id', '')))}"
+
+    from analysis_engine import run_dry_run_analysis
+
+    started = datetime.now(timezone.utc)
+    async with aiohttp.ClientSession() as http_session:
+        try:
+            analysis, b2b_score, debug = await run_dry_run_analysis(
+                doc, prompt_template=prompt_template, http_session=http_session, model=body.model,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+    elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+
+    reached_llm = debug.get("reached_llm", False)
+    guard = None if reached_llm else analysis.get("call_outcome")
+    if reached_llm and "llm_raw_outcome" not in debug:
+        # The Gemini call itself raised inside generate_call_analysis()'s own
+        # try/except, which caught it and silently returned fallback_analysis()
+        # — surfacing that as if it were a real classification would be
+        # misleading (it would look like "your prompt produced this outcome").
+        raise HTTPException(
+            status_code=502,
+            detail="Gemini call failed while testing this prompt — see server logs for the underlying error.",
+        )
+
+    return {
+        "doc_id": str(doc.get("_id", "")),
+        "call_id": doc.get("call_id"),
+        "lead_id": doc.get("lead_id"),
+        "assistant_id": doc.get("assistant_id"),
+        "transcript_turns": len(doc.get("transcript") or []),
+        "muted_turns": len(doc.get("muted_transcript") or []),
+        "call_duration_sec": doc.get("call_duration_sec"),
+        "status": doc.get("status"),
+        "prompt_source": prompt_source,
+        "missing_placeholders": debug.get("missing_placeholders", []),
+        "auto_repaired": debug.get("auto_repaired", False),
+        "guard": guard,
+        "llm_raw_outcome": debug.get("llm_raw_outcome"),
+        "post_processing": debug.get("post_processing", []),
+        "rendered_prompt": debug.get("rendered_prompt"),
+        "analysis": {**analysis, **{k: b2b_score.get(k) for k in ("deal_value", "lead_intent_score", "urgency_flag")}},
+        "stored_analysis": doc.get("analysis"),
+        "elapsed_ms": elapsed_ms,
+    }
 
 
 # ---------------------------------------------------------------------------
