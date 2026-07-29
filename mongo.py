@@ -1,9 +1,12 @@
 """Async MongoDB connection using Motor.
 
 Three logical databases on the same server (192.168.13.65):
-  - voicebot_platform  : call_logs (existing — do not rename)
-  - no_code_platform   : assistants + counters (agent config)
-  - ai_lead_qualify    : call_transcripts (written by bot + callback worker)
+  - voicebot_platform    : call_logs (existing — do not rename)
+  - no_code_platform     : assistants + counters (agent config)
+  - ai_lead_qualify_dev  : call_transcripts (written by bot + callback worker) —
+                           the dev environment's database (was ai_lead_qualify).
+                           bot.py, bot_dev.py, and callback_worker/config.py
+                           all default to this same name.
 """
 
 import os
@@ -67,7 +70,7 @@ def get_users_col():
 
 def get_transcripts_col():
     """call_transcripts written by bot.py and tagged by callback_worker."""
-    return _get_client()["ai_lead_qualify"]["call_transcripts"]
+    return _get_client()["ai_lead_qualify_dev"]["call_transcripts"]
 
 
 def get_lang_cache_col():

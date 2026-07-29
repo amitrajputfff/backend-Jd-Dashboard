@@ -128,6 +128,45 @@ async def create_call_log(data: CreateCallLogRequest):
 
 
 # ---------------------------------------------------------------------------
+# PATCH /api/call-logs/{log_id} — partial update (e.g. attach analysis results
+# once they finish, after the row was already created with the recording).
+# ---------------------------------------------------------------------------
+
+class PatchCallLogRequest(BaseModel):
+    summary: Optional[str] = None
+    outcome: Optional[str] = None
+    sentiment: Optional[str] = None
+    recording_link: Optional[str] = None
+    meta_data: Optional[Dict[str, Any]] = None
+
+
+@router.patch("/api/call-logs/{log_id}")
+async def patch_call_log(log_id: str, data: PatchCallLogRequest):
+    col = get_call_logs_col()
+    try:
+        oid = ObjectId(log_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Call log not found")
+
+    existing = await col.find_one({"_id": oid})
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Call log not found")
+
+    updates = data.model_dump(exclude_unset=True, exclude={"meta_data"})
+    if data.meta_data is not None:
+        # Merge rather than replace — the bot may only know a subset of
+        # meta_data fields (e.g. just analysis_pending) at update time.
+        updates["meta_data"] = {**(existing.get("meta_data") or {}), **data.meta_data}
+    if not updates:
+        return _serialize_doc(existing)
+
+    updates["updated_at"] = datetime.utcnow().isoformat()
+    await col.update_one({"_id": oid}, {"$set": updates})
+    updated = await col.find_one({"_id": oid})
+    return _serialize_doc(updated)
+
+
+# ---------------------------------------------------------------------------
 # GET /api/call-logs  — list with pagination + filters
 # ---------------------------------------------------------------------------
 
