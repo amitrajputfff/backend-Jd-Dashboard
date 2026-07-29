@@ -105,12 +105,13 @@ async def validate_function(data: FunctionTestRequest) -> FunctionValidationResp
 
     status_code: Optional[int] = None
     response_json: Any = None
+    response_text: Optional[str] = None
     try:
         async with aiohttp.ClientSession() as session:
             if method == "GET":
                 async with session.get(full_url, headers=data.headers, timeout=_TIMEOUT) as resp:
                     status_code = resp.status
-                    response_json = await resp.json(content_type=None)
+                    response_text = await resp.text()
             else:
                 body: Any = data.custom_body or {}
                 if isinstance(body, str):
@@ -123,13 +124,23 @@ async def validate_function(data: FunctionTestRequest) -> FunctionValidationResp
                 kwargs = {"data": body} if data.body_format == "form-data" else {"json": body}
                 async with session.request(method, full_url, headers=data.headers, timeout=_TIMEOUT, **kwargs) as resp:
                     status_code = resp.status
-                    response_json = await resp.json(content_type=None)
+                    response_text = await resp.text()
     except Exception as e:
         log.warning(f"[FunctionTest] {name!r} call to {full_url} failed: {e}")
         errors.append(f"Request failed: {e}")
         return FunctionValidationResponse(
             function_name=name, is_valid=False, errors=errors, warnings=warnings, status_code=status_code,
         )
+
+    # The endpoint responded — parse the body separately from the connection
+    # attempt above, so a 200 with a non-JSON body (e.g. text/html) is reported
+    # distinctly instead of falling into the generic "Request failed" branch.
+    if response_text:
+        try:
+            response_json = json.loads(response_text)
+        except Exception:
+            if status_code is not None and status_code < 400:
+                warnings.append(f"HTTP {status_code} OK, but the response body isn't JSON — no fields could be discovered.")
 
     if status_code is not None and status_code >= 400:
         errors.append(f"Endpoint returned HTTP {status_code}.")
@@ -142,6 +153,6 @@ async def validate_function(data: FunctionTestRequest) -> FunctionValidationResp
         errors=errors,
         warnings=warnings,
         status_code=status_code,
-        response=response_json,
+        response=response_json if response_json is not None else response_text,
         keys=keys,
     )
