@@ -89,6 +89,7 @@ def _doc_to_response(doc: dict) -> WorkflowBotResponse:
         tts_provider_id=doc.get("tts_provider_id", 3),
         tts_model_id=doc.get("tts_model_id", 1),
         voice_id=doc.get("voice_id", DEFAULT_VOICE_ID),
+        tts_sample_rate=doc.get("tts_sample_rate"),
         interruption_sensitivity=doc.get("interruption_sensitivity") or "balanced",
         mute_during_closing=doc.get("mute_during_closing", True),
         is_locked=bool(doc.get("is_locked", False)),
@@ -147,6 +148,7 @@ def _new_doc(data: CreateWorkflowBotRequest, wid: int) -> dict:
         "tts_provider_id": data.tts_provider_id if data.tts_provider_id is not None else 3,
         "tts_model_id": data.tts_model_id if data.tts_model_id is not None else 1,
         "voice_id": data.voice_id if data.voice_id is not None else DEFAULT_VOICE_ID,
+        "tts_sample_rate": data.tts_sample_rate,
         "interruption_sensitivity": data.interruption_sensitivity or "balanced",
         "mute_during_closing": data.mute_during_closing if data.mute_during_closing is not None else True,
         "is_locked": bool(data.is_locked or False),
@@ -331,6 +333,9 @@ async def clone_workflow_bot(workflow_bot_id: str, body: dict = None):
 async def get_workflow_bot_config(workflow_bot_id: str):
     doc = await _get_or_404(workflow_bot_id)
     voice = resolve_voice(doc.get("voice_id"))
+    # See assistants.py's get_bot_config for why: 48kHz only ever applies to
+    # sarvam, IndicF5 always stays at 24000 regardless of any stored value.
+    _tts_sample_rate = 48000 if (voice["provider"] == "sarvam" and doc.get("tts_sample_rate") == 48000) else 24000
     return WorkflowBotConfig(
         bot_type="workflow",
         workflow_bot_id=doc["workflow_bot_id"],
@@ -338,6 +343,7 @@ async def get_workflow_bot_config(workflow_bot_id: str):
         global_prompt=doc.get("global_prompt", ""),
         tts_provider=voice["provider"],
         tts_voice=voice["speaker"],
+        tts_sample_rate=_tts_sample_rate,
         interruption_sensitivity=doc.get("interruption_sensitivity") or "balanced",
         mute_during_closing=doc.get("mute_during_closing", True),
         workflow=doc.get("workflow", {"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}}),

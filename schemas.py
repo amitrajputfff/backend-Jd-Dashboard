@@ -133,6 +133,13 @@ class CreateAssistantRequest(BaseModel):
     tts_model_id: Optional[int] = None
     voice_id: Optional[int] = 12
 
+    # WebRTC transport output sample rate. None = auto (24000 for justdial/IndicF5,
+    # which is fine-tuned for that rate and gains nothing above it; 48000 for
+    # sarvam/bulbul:v3, which genuinely supports higher fidelity). Only meaningful
+    # when voice_id resolves to provider="sarvam" — the Voice tab hides/disables
+    # this control otherwise.
+    tts_sample_rate: Optional[int] = None
+
     # How easily a caller can interrupt the bot mid-sentence — a simple named
     # preset (see interruption_presets.py) instead of exposing raw seconds/
     # word-count knobs to PMs. "balanced" matches today's behavior.
@@ -219,6 +226,7 @@ class UpdateAssistantRequest(BaseModel):
     tts_provider_id: Optional[int] = None
     tts_model_id: Optional[int] = None
     voice_id: Optional[int] = None
+    tts_sample_rate: Optional[int] = None
 
     # How easily a caller can interrupt the bot mid-sentence
     interruption_sensitivity: Optional[str] = None
@@ -334,6 +342,7 @@ class AssistantResponse(BaseModel):
     tts_provider_id: int = 3
     tts_model_id: int = 1
     voice_id: int = 12
+    tts_sample_rate: Optional[int] = None
     interruption_sensitivity: str = "balanced"
     mute_during_greeting: bool = True
     mute_during_closing: bool = True
@@ -413,6 +422,9 @@ class BotConfig(BaseModel):
     # speaker string to pass to that engine.
     tts_provider: str = "justdial"
     tts_voice: str = "simran"
+    # Resolved WebRTC transport output sample rate — see CreateAssistantRequest's
+    # tts_sample_rate docstring. 24000 for justdial, 24000 or 48000 for sarvam.
+    tts_sample_rate: int = 24000
     # How easily a caller can interrupt the bot mid-sentence — a named preset
     # ("patient" | "balanced" | "responsive") resolved into concrete
     # LiveKit/Pipecat parameters at call start (see interruption_presets.py).
@@ -670,6 +682,7 @@ class UpdateWorkflowBotRequest(BaseModel):
     tts_provider_id: Optional[int] = None
     tts_model_id: Optional[int] = None
     voice_id: Optional[int] = None
+    tts_sample_rate: Optional[int] = None
 
     # How easily a caller can interrupt the bot mid-sentence
     interruption_sensitivity: Optional[str] = None
@@ -725,6 +738,7 @@ class WorkflowBotResponse(BaseModel):
     tts_provider_id: int = 3
     tts_model_id: int = 1
     voice_id: int = 12
+    tts_sample_rate: Optional[int] = None
     interruption_sensitivity: str = "balanced"
     mute_during_closing: bool = True
     # Lock — True means live in production; edits and deletes are rejected
@@ -787,6 +801,9 @@ class WorkflowBotConfig(BaseModel):
     # same semantics as BotConfig.tts_provider/tts_voice above.
     tts_provider: str = "justdial"
     tts_voice: str = "simran"
+    # Resolved WebRTC transport output sample rate — see CreateAssistantRequest's
+    # tts_sample_rate docstring. 24000 for justdial, 24000 or 48000 for sarvam.
+    tts_sample_rate: int = 24000
     # How easily a caller can interrupt the bot mid-sentence — same
     # named-preset semantics as BotConfig.interruption_sensitivity above.
     interruption_sensitivity: str = "balanced"

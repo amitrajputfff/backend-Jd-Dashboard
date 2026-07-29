@@ -89,6 +89,7 @@ def _doc_to_response(doc: dict) -> AssistantResponse:
         tts_provider_id=doc.get("tts_provider_id", 3),
         tts_model_id=doc.get("tts_model_id", 1),
         voice_id=doc.get("voice_id", DEFAULT_VOICE_ID),
+        tts_sample_rate=doc.get("tts_sample_rate"),
         interruption_sensitivity=doc.get("interruption_sensitivity") or "balanced",
         mute_during_greeting=doc.get("mute_during_greeting", True),
         mute_during_closing=doc.get("mute_during_closing", True),
@@ -181,6 +182,7 @@ def _new_doc(data: CreateAssistantRequest, aid: int) -> dict:
         "tts_provider_id": data.tts_provider_id if data.tts_provider_id is not None else 3,
         "tts_model_id": data.tts_model_id if data.tts_model_id is not None else 1,
         "voice_id": data.voice_id if data.voice_id is not None else DEFAULT_VOICE_ID,
+        "tts_sample_rate": data.tts_sample_rate,
         "interruption_sensitivity": data.interruption_sensitivity or "balanced",
         "mute_during_greeting": data.mute_during_greeting if data.mute_during_greeting is not None else True,
         "mute_during_closing": data.mute_during_closing if data.mute_during_closing is not None else True,
@@ -379,6 +381,10 @@ async def clone_assistant(assistant_id: str, body: dict = None):
 async def get_bot_config(assistant_id: str):
     doc = await _get_or_404(assistant_id)
     _voice = resolve_voice(doc.get("voice_id"))
+    # 48kHz only ever applies to sarvam (bulbul:v3 genuinely supports it); IndicF5
+    # is fine-tuned for 24kHz and gains nothing above it, so any stored override
+    # is ignored for justdial — never let a stale/mismatched value leak through.
+    _tts_sample_rate = 48000 if (_voice["provider"] == "sarvam" and doc.get("tts_sample_rate") == 48000) else 24000
     return BotConfig(
         assistant_id=doc["assistant_id"],
         organization_id=doc.get("organization_id", ""),
@@ -413,6 +419,7 @@ async def get_bot_config(assistant_id: str):
         function_filler_message=doc.get("function_filler_message", []),
         tts_provider=_voice["provider"],
         tts_voice=_voice["speaker"],
+        tts_sample_rate=_tts_sample_rate,
         interruption_sensitivity=doc.get("interruption_sensitivity") or "balanced",
         mute_during_greeting=doc.get("mute_during_greeting", True),
         mute_during_closing=doc.get("mute_during_closing", True),
