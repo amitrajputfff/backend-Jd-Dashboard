@@ -14,10 +14,10 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()  # load backend/.env before any module reads os.environ
 
 try:
-    from .routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export, audit
+    from .routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export, audit, prompt_versions
     from .mongo import get_assistants_col, get_users_col, get_workflow_bots_col, get_audit_logs_col
 except ImportError:
-    from routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export, audit
+    from routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export, audit, prompt_versions
     from mongo import get_assistants_col, get_users_col, get_workflow_bots_col, get_audit_logs_col
 
 
@@ -78,6 +78,7 @@ app.include_router(auth.router, prefix="/backend")
 app.include_router(lang_cache.router, prefix="/backend")
 app.include_router(export.router, prefix="/backend")
 app.include_router(audit.router, prefix="/backend")
+app.include_router(prompt_versions.router, prefix="/backend")
 
 
 @app.get("/health")
