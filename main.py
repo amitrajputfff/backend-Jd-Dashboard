@@ -14,11 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()  # load backend/.env before any module reads os.environ
 
 try:
-    from .routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export
-    from .mongo import get_assistants_col, get_users_col, get_workflow_bots_col
+    from .routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export, audit
+    from .mongo import get_assistants_col, get_users_col, get_workflow_bots_col, get_audit_logs_col
 except ImportError:
-    from routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export
-    from mongo import get_assistants_col, get_users_col, get_workflow_bots_col
+    from routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export, audit
+    from mongo import get_assistants_col, get_users_col, get_workflow_bots_col, get_audit_logs_col
 
 
 @asynccontextmanager
@@ -39,6 +39,12 @@ async def lifespan(app: FastAPI):
     users_col = get_users_col()
     await users_col.create_index("email", unique=True)
     await users_col.create_index("id", unique=True)
+
+    # Audit logs indexes — newest-first is the default sort on every query.
+    audit_col = get_audit_logs_col()
+    await audit_col.create_index([("timestamp", -1)])
+    await audit_col.create_index([("organization_id", 1), ("timestamp", -1)])
+    await audit_col.create_index("resource_id")
     yield
 
 
@@ -71,6 +77,7 @@ app.include_router(mock_vendor.router, prefix="/backend")
 app.include_router(auth.router, prefix="/backend")
 app.include_router(lang_cache.router, prefix="/backend")
 app.include_router(export.router, prefix="/backend")
+app.include_router(audit.router, prefix="/backend")
 
 
 @app.get("/health")

@@ -84,6 +84,20 @@ def get_lang_cache_col():
     return _get_client()["no_code_platform"]["lang_string_cache"]
 
 
+def get_audit_logs_col():
+    """Who changed what, on which assistant/workflow bot, and when — see
+    backend/audit_log.py's write_audit_log(). Read by routers/audit.py's
+    GET /api/audit/logs/all-filters (JD-Dashboard's Audit Logs page)."""
+    return _get_client()["no_code_platform"]["audit_logs"]
+
+
+def get_prompt_versions_col():
+    """Saved system-prompt snapshots for assistants — see
+    backend/routers/prompt_versions.py. Replaces the old localStorage-only
+    version history in JD-Dashboard's llm-config-section.tsx."""
+    return _get_client()["no_code_platform"]["prompt_versions"]
+
+
 async def next_sequence(name: str) -> int:
     """Atomically increment and return the next integer for `name`."""
     doc = await get_counters_col().find_one_and_update(

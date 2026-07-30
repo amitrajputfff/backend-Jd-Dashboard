@@ -21,10 +21,12 @@ try:
     )
     from ..voice_catalog import DEFAULT_VOICE_ID, resolve_voice
     from ..languages import DEFAULT_LANGUAGE, language_catalog_for_bot
+    from ..audit_log import write_audit_log
     from .lang_cache import warm_language_cache
     from . import auth
 except ImportError:
     from mongo import get_assistants_col, next_sequence
+    from audit_log import write_audit_log
     from schemas import (
         AssistantResponse,
         AssistantsListResponse,
@@ -264,11 +266,17 @@ async def list_assistants(
 # ---------------------------------------------------------------------------
 
 @router.post("/api/assistants", response_model=AssistantResponse, status_code=201)
-async def create_assistant(data: CreateAssistantRequest):
+async def create_assistant(data: CreateAssistantRequest, authorization: Optional[str] = Header(default=None)):
     col = get_assistants_col()
     aid = await next_sequence("assistant_id")
     doc = _new_doc(data, aid)
     await col.insert_one(doc)
+    user = await auth.get_current_user_optional(authorization)
+    await write_audit_log(
+        user=user, action="agent.created", resource="assistants",
+        resource_id=doc["assistant_id"], organization_id=data.organization_id,
+        details=f"Created agent {data.name!r}",
+    )
     return _doc_to_response(doc)
 
 
@@ -277,8 +285,8 @@ async def create_assistant(data: CreateAssistantRequest):
 # ---------------------------------------------------------------------------
 
 @router.post("/api/assistants/ai-create", response_model=AssistantResponse, status_code=201)
-async def ai_create_assistant(data: CreateAssistantRequest):
-    return await create_assistant(data)
+async def ai_create_assistant(data: CreateAssistantRequest, authorization: Optional[str] = Header(default=None)):
+    return await create_assistant(data, authorization)
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +329,15 @@ async def update_assistant(
     # docstring for why this has to happen here (on save) rather than at call
     # start. warm_language_cache no-ops immediately for hinglish/hindi.
     background_tasks.add_task(warm_language_cache, "assistant", assistant_id, doc)
+    user = await auth.get_current_user_optional(authorization)
+    changed_fields = sorted(k for k in updates if k != "updated_at")
+    background_tasks.add_task(
+        write_audit_log,
+        user=user, action="agent.updated", resource="assistants",
+        resource_id=assistant_id, organization_id=doc.get("organization_id", ""),
+        details=f"Updated {', '.join(changed_fields)}" if changed_fields else "Updated agent",
+        metadata={"changed_fields": changed_fields},
+    )
     return _doc_to_response(doc)
 
 
@@ -331,6 +348,7 @@ async def update_assistant(
 @router.delete("/api/assistants/{assistant_id}")
 async def delete_assistant(
     assistant_id: str,
+    background_tasks: BackgroundTasks,
     password: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
 ):
@@ -348,6 +366,13 @@ async def delete_assistant(
             "updated_at": now,
         }},
     )
+    user = await auth.get_current_user_optional(authorization)
+    background_tasks.add_task(
+        write_audit_log,
+        user=user, action="agent.deleted", resource="assistants",
+        resource_id=assistant_id, organization_id=doc.get("organization_id", ""),
+        details=f"Deleted agent {doc.get('name', '')!r}", severity="medium",
+    )
     return {"message": "Assistant deleted", "assistant_id": assistant_id}
 
 
@@ -356,7 +381,11 @@ async def delete_assistant(
 # ---------------------------------------------------------------------------
 
 @router.post("/api/assistants/{assistant_id}/restore", response_model=AssistantResponse)
-async def restore_assistant(assistant_id: str):
+async def restore_assistant(
+    assistant_id: str,
+    background_tasks: BackgroundTasks,
+    authorization: Optional[str] = Header(default=None),
+):
     col = get_assistants_col()
     doc = await col.find_one({"assistant_id": assistant_id})
     if doc is None:
@@ -372,6 +401,13 @@ async def restore_assistant(assistant_id: str):
         }},
     )
     doc = await col.find_one({"assistant_id": assistant_id})
+    user = await auth.get_current_user_optional(authorization)
+    background_tasks.add_task(
+        write_audit_log,
+        user=user, action="agent.activated", resource="assistants",
+        resource_id=assistant_id, organization_id=doc.get("organization_id", ""),
+        details=f"Restored agent {doc.get('name', '')!r} from trash",
+    )
     return _doc_to_response(doc)
 
 
@@ -380,7 +416,12 @@ async def restore_assistant(assistant_id: str):
 # ---------------------------------------------------------------------------
 
 @router.post("/api/assistants/{assistant_id}/clone", response_model=AssistantResponse)
-async def clone_assistant(assistant_id: str, body: dict = None):
+async def clone_assistant(
+    assistant_id: str,
+    background_tasks: BackgroundTasks,
+    body: dict = None,
+    authorization: Optional[str] = Header(default=None),
+):
     col = get_assistants_col()
     original = await _get_or_404(assistant_id)
     new_name = (body or {}).get("new_name") or (body or {}).get("name") or f"{original['name']} (Copy)"
@@ -398,6 +439,13 @@ async def clone_assistant(assistant_id: str, body: dict = None):
     clone["created_at"] = now
     clone["updated_at"] = now
     await col.insert_one(clone)
+    user = await auth.get_current_user_optional(authorization)
+    background_tasks.add_task(
+        write_audit_log,
+        user=user, action="agent.cloned", resource="assistants",
+        resource_id=clone["assistant_id"], organization_id=clone.get("organization_id", ""),
+        details=f"Cloned {original.get('name', '')!r} as {new_name!r}",
+    )
     return _doc_to_response(clone)
 
 

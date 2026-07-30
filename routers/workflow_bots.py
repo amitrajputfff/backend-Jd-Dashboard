@@ -20,10 +20,12 @@ try:
     )
     from ..voice_catalog import DEFAULT_VOICE_ID, resolve_voice
     from ..languages import DEFAULT_LANGUAGE, language_catalog_for_bot
+    from ..audit_log import write_audit_log
     from .lang_cache import warm_language_cache
     from . import auth
 except ImportError:
     from mongo import get_workflow_bots_col, next_sequence
+    from audit_log import write_audit_log
     from schemas import (
         CreateWorkflowBotRequest,
         UpdateWorkflowBotRequest,
@@ -226,11 +228,17 @@ async def list_workflow_bots(
 # ---------------------------------------------------------------------------
 
 @router.post("/api/workflow-bots", response_model=WorkflowBotResponse, status_code=201)
-async def create_workflow_bot(data: CreateWorkflowBotRequest):
+async def create_workflow_bot(data: CreateWorkflowBotRequest, authorization: Optional[str] = Header(default=None)):
     col = get_workflow_bots_col()
     wid = await next_sequence("workflow_bot_id")
     doc = _new_doc(data, wid)
     await col.insert_one(doc)
+    user = await auth.get_current_user_optional(authorization)
+    await write_audit_log(
+        user=user, action="agent.created", resource="workflow_bots",
+        resource_id=doc["workflow_bot_id"], organization_id=data.organization_id,
+        details=f"Created workflow bot {data.name!r}",
+    )
     return _doc_to_response(doc)
 
 
@@ -272,6 +280,15 @@ async def update_workflow_bot(
     # Warm the SIP-runtime fixed-string translation cache in the background —
     # see routers/lang_cache.py. No-ops immediately for hinglish/hindi.
     background_tasks.add_task(warm_language_cache, "workflow", workflow_bot_id, doc)
+    user = await auth.get_current_user_optional(authorization)
+    changed_fields = sorted(k for k in raw if k != "updated_at")
+    background_tasks.add_task(
+        write_audit_log,
+        user=user, action="agent.updated", resource="workflow_bots",
+        resource_id=workflow_bot_id, organization_id=doc.get("organization_id", ""),
+        details=f"Updated {', '.join(changed_fields)}" if changed_fields else "Updated workflow bot",
+        metadata={"changed_fields": changed_fields},
+    )
     return _doc_to_response(doc)
 
 
@@ -282,6 +299,7 @@ async def update_workflow_bot(
 @router.delete("/api/workflow-bots/{workflow_bot_id}")
 async def delete_workflow_bot(
     workflow_bot_id: str,
+    background_tasks: BackgroundTasks,
     password: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
 ):
@@ -299,6 +317,13 @@ async def delete_workflow_bot(
             "updated_at": now,
         }},
     )
+    user = await auth.get_current_user_optional(authorization)
+    background_tasks.add_task(
+        write_audit_log,
+        user=user, action="agent.deleted", resource="workflow_bots",
+        resource_id=workflow_bot_id, organization_id=doc.get("organization_id", ""),
+        details=f"Deleted workflow bot {doc.get('name', '')!r}", severity="medium",
+    )
     return {"message": "Workflow bot deleted", "workflow_bot_id": workflow_bot_id}
 
 
@@ -307,7 +332,11 @@ async def delete_workflow_bot(
 # ---------------------------------------------------------------------------
 
 @router.post("/api/workflow-bots/{workflow_bot_id}/restore", response_model=WorkflowBotResponse)
-async def restore_workflow_bot(workflow_bot_id: str):
+async def restore_workflow_bot(
+    workflow_bot_id: str,
+    background_tasks: BackgroundTasks,
+    authorization: Optional[str] = Header(default=None),
+):
     col = get_workflow_bots_col()
     doc = await col.find_one({"workflow_bot_id": workflow_bot_id})
     if doc is None:
@@ -323,6 +352,13 @@ async def restore_workflow_bot(workflow_bot_id: str):
         }},
     )
     doc = await col.find_one({"workflow_bot_id": workflow_bot_id})
+    user = await auth.get_current_user_optional(authorization)
+    background_tasks.add_task(
+        write_audit_log,
+        user=user, action="agent.activated", resource="workflow_bots",
+        resource_id=workflow_bot_id, organization_id=doc.get("organization_id", ""),
+        details=f"Restored workflow bot {doc.get('name', '')!r} from trash",
+    )
     return _doc_to_response(doc)
 
 
@@ -331,7 +367,12 @@ async def restore_workflow_bot(workflow_bot_id: str):
 # ---------------------------------------------------------------------------
 
 @router.post("/api/workflow-bots/{workflow_bot_id}/clone", response_model=WorkflowBotResponse)
-async def clone_workflow_bot(workflow_bot_id: str, body: dict = None):
+async def clone_workflow_bot(
+    workflow_bot_id: str,
+    background_tasks: BackgroundTasks,
+    body: dict = None,
+    authorization: Optional[str] = Header(default=None),
+):
     col = get_workflow_bots_col()
     original = await _get_or_404(workflow_bot_id)
     new_name = (body or {}).get("name") or f"{original['name']} (Copy)"
@@ -350,6 +391,13 @@ async def clone_workflow_bot(workflow_bot_id: str, body: dict = None):
     clone["created_at"] = now
     clone["updated_at"] = now
     await col.insert_one(clone)
+    user = await auth.get_current_user_optional(authorization)
+    background_tasks.add_task(
+        write_audit_log,
+        user=user, action="agent.cloned", resource="workflow_bots",
+        resource_id=clone["workflow_bot_id"], organization_id=clone.get("organization_id", ""),
+        details=f"Cloned {original.get('name', '')!r} as {new_name!r}",
+    )
     return _doc_to_response(clone)
 
 

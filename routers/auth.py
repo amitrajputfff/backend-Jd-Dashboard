@@ -174,6 +174,24 @@ async def get_user_from_bearer(authorization: Optional[str]) -> dict:
     return doc
 
 
+async def get_current_user_optional(authorization: Optional[str] = Header(default=None)) -> Optional[dict]:
+    """Best-effort identify the caller for audit-log attribution — NOT an
+    access-control gate. Returns None on any failure (missing/expired/
+    malformed token, unknown user) instead of raising, so adding this to an
+    endpoint that has never required auth (create/update/delete on
+    assistants/workflow_bots — see routers/audit_log.py's write_audit_log
+    call sites) can never turn a working request into a 401. The dashboard's
+    apiClient already attaches a real Bearer token to every request when the
+    user is logged in (see JD-Dashboard/src/lib/api/client.ts's request
+    interceptor), so in practice this resolves a real user on every normal
+    dashboard action.
+    """
+    try:
+        return await get_user_from_bearer(authorization)
+    except HTTPException:
+        return None
+
+
 async def verify_live_bot_action(authorization: Optional[str], password: Optional[str]) -> None:
     """Guard for modifying an already-Live-tagged Assistant or Workflow Bot
     (see routers/assistants.py / routers/workflow_bots.py update endpoints).
