@@ -59,16 +59,30 @@ class FunctionValidationResponse(BaseModel):
 
 
 def _flatten_keys(value: Any, prefix: str = "", out: Optional[List[str]] = None) -> List[str]:
+    """Matches bot.py's _flatten_dict (the runtime {fn.X.field} resolver)
+    exactly, so a chip offered here is guaranteed resolvable at call time.
+
+    A list is only worth recursing into when its first element is itself a
+    dict (sampled to discover that shape's fields, same as the runtime
+    resolver). A list of scalars — e.g. {"questions_block": ["Q1", "Q2"]} —
+    has no further path to expose, so its OWN key must be appended as a leaf
+    instead of silently vanishing (the previous unconditional recursion
+    tried to flatten value[0] directly, hit a bare string/number, and
+    produced nothing at all — the whole field disappeared from the
+    draggable-variable list even though the runtime resolver can return it).
+    """
     if out is None:
         out = []
     if isinstance(value, dict):
         for k, v in value.items():
             path = f"{prefix}.{k}" if prefix else str(k)
-            if isinstance(v, (dict, list)):
+            if isinstance(v, dict):
                 _flatten_keys(v, path, out)
+            elif isinstance(v, list) and v and isinstance(v[0], dict):
+                _flatten_keys(v[0], path, out)
             else:
                 out.append(path)
-    elif isinstance(value, list) and value:
+    elif isinstance(value, list) and value and isinstance(value[0], dict):
         _flatten_keys(value[0], prefix, out)
     return out
 
