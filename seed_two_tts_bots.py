@@ -93,6 +93,7 @@ def _functions_for(mis_api_base: str) -> list[dict]:
             "body_format": "json",
             "custom_body": "",
             "schema": {},
+            "response_path": "results.data.0",
         },
         {
             "name": "FetchCategorySchema",

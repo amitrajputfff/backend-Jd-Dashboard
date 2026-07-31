@@ -50,6 +50,7 @@ DEV_FUNCTIONS = [
         "body_format": "json",
         "custom_body": "",
         "schema": {},
+        "response_path": "results.data.0",
     },
     {
         "name": "FetchCategorySchema",

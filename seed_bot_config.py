@@ -167,6 +167,9 @@ FUNCTIONS = [
         "body_format": "json",
         "custom_body": "",
         "schema": {},
+        # MIS wraps the lead in a paginated envelope; unwrap down to the
+        # single record the runtime's build_system_prompt expects.
+        "response_path": "results.data.0",
     },
     {
         "name": "FetchCategorySchema",

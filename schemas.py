@@ -44,6 +44,12 @@ class AssistantFunction(BaseModel):
     # Missing/empty is normalized by callers to "both" for FetchLead and "in_call"
     # otherwise, to preserve pre-existing bot behaviour.
     trigger: Literal["on_start", "in_call", "both"] = "in_call"
+    # Optional dot path (list indices allowed, e.g. "results.data.0") the
+    # runtime uses to unwrap a paginated/enveloped API response down to the
+    # single record build_system_prompt expects. Only needed when this
+    # function's response isn't already a flat object — e.g. MIS's
+    # {"results": {"data": [...]}} envelope for FetchLead.
+    response_path: str = ""
 
     model_config = {"populate_by_name": True}
 

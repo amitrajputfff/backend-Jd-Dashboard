@@ -19,7 +19,7 @@ col.create_index("assistant_id", unique=True)
 
 now = datetime.now(timezone.utc)
 FUNCS = [
-    {"name":"FetchLead","description":"Fetch lead from MIS","url":"http://192.168.8.67:8000/leads/ai-lead-qualify/mis","method":"GET","headers":{},"query_params":{"lead_id":"","mobile":"","page":"1","limit":"1","ai_partner":"inh-suny-bot"},"body_format":"json","custom_body":"","schema":{}},
+    {"name":"FetchLead","description":"Fetch lead from MIS","url":"http://192.168.8.67:8000/leads/ai-lead-qualify/mis","method":"GET","headers":{},"query_params":{"lead_id":"","mobile":"","page":"1","limit":"1","ai_partner":"inh-suny-bot"},"body_format":"json","custom_body":"","schema":{},"response_path":"results.data.0"},
     {"name":"FetchCategorySchema","description":"Fetch schema for product change","url":"http://192.168.8.67:8000/leads/ai-lead-qualify/search","method":"GET","headers":{},"query_params":{"lead_id":"","search_term":""},"body_format":"json","custom_body":"","schema":{"type":"object","properties":{"srchterm":{"type":"string"}},"required":["srchterm"]}},
 ]
 fields = {
