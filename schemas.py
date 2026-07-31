@@ -54,6 +54,20 @@ class AssistantFunction(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class VariableMapping(BaseModel):
+    """Maps a bare {token} placeholder in the prompt (e.g. pasted in from
+    somewhere else, written as {name} rather than the platform's own
+    {fn.FetchLead.buyer_details.buyer_name} syntax) to a field on one of this
+    bot's configured functions' response data, with a fallback for when that
+    function didn't run this call or the field is missing. See
+    _resolve_custom_variables in bot.py for how this is applied at call time.
+    """
+    token: str = ""
+    function: str = ""
+    field: str = ""
+    fallback: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Create
 # ---------------------------------------------------------------------------
@@ -70,6 +84,7 @@ class CreateAssistantRequest(BaseModel):
     call_end_text: Optional[str] = ""
     function_calling: Optional[bool] = False
     functions: Optional[List[Any]] = Field(default_factory=list)
+    variable_mappings: Optional[List[Any]] = Field(default_factory=list)
 
     # Bot API URLs
     mis_api_base: Optional[str] = _MIS_API_BASE_DEFAULT
@@ -208,6 +223,7 @@ class UpdateAssistantRequest(BaseModel):
     call_end_text: Optional[str] = None
     function_calling: Optional[bool] = None
     functions: Optional[List[Any]] = None
+    variable_mappings: Optional[List[Any]] = None
     mis_api_base: Optional[str] = None
     callback_api_url: Optional[str] = None
     category_change_api: Optional[str] = None
@@ -338,6 +354,7 @@ class AssistantResponse(BaseModel):
     # Function calling
     function_calling: bool
     functions: List[Any]
+    variable_mappings: List[Any] = Field(default_factory=list)
 
     # Soft delete / active
     is_deleted: bool
@@ -453,6 +470,7 @@ class BotConfig(BaseModel):
     call_end_text: str
     function_calling: bool
     functions: List[Any]
+    variable_mappings: List[Any] = Field(default_factory=list)
     api_urls: Dict[str, str]          # mis_api_base, callback_api_url, category_change_api
     prompt_config: Dict[str, str]     # script_rule, opening_instruction, closing_instruction, timeout_message
     # Per-assistant MongoDB override — see voicebot_nodcode_platform/bot.py's

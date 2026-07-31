@@ -81,6 +81,7 @@ def _doc_to_response(doc: dict) -> AssistantResponse:
         timeout_message=doc.get("timeout_message", ""),
         function_calling=bool(doc.get("function_calling", False)),
         functions=doc.get("functions", []),
+        variable_mappings=doc.get("variable_mappings", []),
         is_deleted=bool(doc.get("is_deleted", False)),
         deleted_until=doc.get("deleted_until"),
         is_active=bool(doc.get("is_active", True)),
@@ -171,6 +172,7 @@ def _new_doc(data: CreateAssistantRequest, aid: int) -> dict:
         "timeout_message": data.timeout_message or "",
         "function_calling": bool(data.function_calling),
         "functions": data.functions or [],
+        "variable_mappings": data.variable_mappings or [],
         "language": data.language or "hindi",
         "temperature": data.temperature if data.temperature is not None else 0.4,
         "gemini_start_sensitivity": data.gemini_start_sensitivity or "START_SENSITIVITY_LOW",
@@ -471,6 +473,7 @@ async def get_bot_config(assistant_id: str):
         call_end_text=doc.get("call_end_text", ""),
         function_calling=bool(doc.get("function_calling", False)),
         functions=doc.get("functions", []),
+        variable_mappings=doc.get("variable_mappings", []),
         api_urls={
             "mis_api_base": doc.get("mis_api_base", _MIS_API_BASE_DEFAULT),
             "callback_api_url": doc.get("callback_api_url", _CALLBACK_API_URL_DEFAULT),
