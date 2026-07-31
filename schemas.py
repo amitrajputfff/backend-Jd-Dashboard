@@ -160,6 +160,7 @@ class CreateAssistantRequest(BaseModel):
     # fields aren't validation errors, they're just ignored), so the dashboard
     # showed them as editable but nothing was ever actually saved.
     speech_speed: Optional[float] = 1.0
+    nfe_step: Optional[int] = 16
     pitch: Optional[str] = "0%"
 
     # Advanced Settings — same previously-silent-drop bug.
@@ -269,6 +270,7 @@ class UpdateAssistantRequest(BaseModel):
     # fields aren't validation errors, they're just ignored), so editing
     # these and clicking Update never actually persisted the change.
     speech_speed: Optional[float] = None
+    nfe_step: Optional[int] = None
     pitch: Optional[str] = None
 
     # Advanced Settings — same previously-silent-drop bug.
@@ -399,6 +401,7 @@ class AssistantResponse(BaseModel):
     mute_during_greeting: bool = True
     mute_during_closing: bool = True
     speech_speed: float = 1.0
+    nfe_step: int = 16
     pitch: str = "0%"
     interruption_level: str = "Low"
     cutoff_seconds: int = 5
@@ -487,6 +490,7 @@ class BotConfig(BaseModel):
     # Voice tab — speech rate multiplier, threaded into Sarvam's `pace` /
     # IndicF5's `speed` at TTS construction time (see webrtc_bot.py).
     speech_speed: float = 1.0
+    nfe_step: int = 16
     pitch: str = "0%"
     # Whether this call's audio gets recorded at all — see
     # webrtc_call_persistence.py's setup_call_recording(). Defaults True to
@@ -728,6 +732,7 @@ class CreateWorkflowBotRequest(BaseModel):
 
     # Voice tab — same previously-silent-drop bug as CreateAssistantRequest.
     speech_speed: Optional[float] = 1.0
+    nfe_step: Optional[int] = 16
     pitch: Optional[str] = "0%"
 
     # Advanced Settings — same previously-silent-drop bug.
@@ -796,6 +801,7 @@ class UpdateWorkflowBotRequest(BaseModel):
 
     # Voice tab — same previously-silent-drop bug as UpdateAssistantRequest.
     speech_speed: Optional[float] = None
+    nfe_step: Optional[int] = None
     pitch: Optional[str] = None
 
     # Advanced Settings — same previously-silent-drop bug.
@@ -866,6 +872,7 @@ class WorkflowBotResponse(BaseModel):
     interruption_sensitivity: str = "balanced"
     mute_during_closing: bool = True
     speech_speed: float = 1.0
+    nfe_step: int = 16
     pitch: str = "0%"
     call_recording: bool = True
     voice_activity_detection: bool = True
@@ -951,6 +958,7 @@ class WorkflowBotConfig(BaseModel):
     mute_during_closing: bool = True
     # Voice tab — same semantics as BotConfig.speech_speed/pitch above.
     speech_speed: float = 1.0
+    nfe_step: int = 16
     pitch: str = "0%"
     # Whether this call's audio gets recorded — same semantics as
     # BotConfig.call_recording above.
