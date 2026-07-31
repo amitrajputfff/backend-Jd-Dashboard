@@ -89,12 +89,22 @@ def _ensure_agent_name(rule, agent_name: str = TARGET_AGENT_NAME) -> None:
         rule.room_config.agents.add(agent_name=agent_name)
 
 
-def _ts_to_iso(proto_timestamp) -> str:
+def _ts_to_iso(proto_timestamp) -> str | None:
+    """None means "unknown", not "epoch" — LiveKit's ListSIPDispatchRule doesn't
+    populate created_at/updated_at for every rule (seen on rules provisioned
+    before the server tracked these), and a protobuf Timestamp field is always
+    present with seconds=0 as its zero-value default rather than being unset/
+    null, so this can't be told apart from a real timestamp except by value.
+    Silently converting that default straight to a date rendered as "1 Jan
+    1970" on every affected row instead of showing that the value is missing.
+    """
     try:
         secs = proto_timestamp.seconds if hasattr(proto_timestamp, "seconds") else float(proto_timestamp)
+        if secs <= 0:
+            return None
         return datetime.fromtimestamp(secs, tz=timezone.utc).isoformat()
     except Exception:
-        return datetime.now(tz=timezone.utc).isoformat()
+        return None
 
 
 async def _build_row(rule, trunks_by_id: dict, bots_by_id: dict) -> dict:
