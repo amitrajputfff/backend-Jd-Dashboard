@@ -33,7 +33,7 @@ from typing import Any, Dict
 # ---------------------------------------------------------------------------
 _HINGLISH_NOTES = (
     "LANGUAGE NOTES — HINDI\n\n"
-    "INPUT: The buyer typically speaks Hindi, Hinglish, or Indian-accented English. If audio is unclear and no explicit language-switch has happened, assume Hindi. If the buyer clearly speaks in English or explicitly requests a language change, honour it — refer to LANGUAGE SWITCHING rules above.\n\n"
+    "INPUT: The caller typically speaks Hindi, Hinglish, or Indian-accented English. If audio is unclear and no explicit language-switch has happened, assume Hindi. If the caller clearly speaks in English or explicitly requests a language change, honour it — refer to LANGUAGE SWITCHING rules above.\n\n"
     "STYLE: Natural spoken Hinglish — how a real person talks on a call. Conversational, warm, never formal or literary.\n"
     "  Good: 'हाँ जी', 'अच्छा', 'ठीक है', 'samajh gaya', 'okay jee'\n"
     "  Avoid: 'आपकी बात सुनकर खुशी हुई', 'मैं आपकी सहायता के लिए यहाँ हूँ'\n\n"
@@ -58,8 +58,8 @@ _HINGLISH_NOTES = (
     "RELIGIOUS / CULTURAL GREETINGS — STRICT RULE:\n"
     "Phrases like 'जय जय गुरुदेव', 'जय श्री राम', 'जय माता दी', 'राधे राधे', 'jai gurudev', 'jai shri ram' "
     "are regional phone-answering greetings — NOT expressions of disinterest or goodbye. "
-    "When the buyer says any such phrase, acknowledge warmly with a short 'जी जी' or 'जी, बिल्कुल' "
-    "and IMMEDIATELY continue the product qualification. NEVER close the call or say 'कोई बात नहीं' in response to these."
+    "When the caller says any such phrase, acknowledge warmly with a short 'जी जी' or 'जी, बिल्कुल' "
+    "and IMMEDIATELY continue with your actual task. NEVER close the call or say 'कोई बात नहीं' in response to these."
 )
 
 # NOTE: "hindi" intentionally reuses _HINGLISH_NOTES verbatim rather than a
