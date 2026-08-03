@@ -47,6 +47,14 @@ class Assistant(Base):
     prompt = Column(Text, default="")           # system prompt
     initial_message = Column(Text, default="")  # greeting
     call_end_text = Column(Text, default="")
+    # LLM-composed greeting/closing toggle — see BotConfig/AssistantResponse
+    # in schemas.py and build_greeting_directive/build_closing_directive in
+    # voicebot_nodcode_platform/bot.py. initial_message/call_end_text above
+    # remain the fallback when the toggle is on but guidance is blank.
+    dynamic_greeting = Column(Boolean, default=False)
+    greeting_guidance = Column(Text, default="")
+    dynamic_closing = Column(Boolean, default=False)
+    closing_guidance = Column(Text, default="")
 
     # API URLs used by the bot (editable per-agent)
     mis_api_base = Column(String(500), default=_MIS_API_BASE_DEFAULT)

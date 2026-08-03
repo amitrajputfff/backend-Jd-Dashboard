@@ -82,6 +82,17 @@ class CreateAssistantRequest(BaseModel):
     prompt: Optional[str] = ""
     initial_message: Optional[str] = ""
     call_end_text: Optional[str] = ""
+    # When true, the runtime asks the LLM to compose the opening/closing line
+    # from `greeting_guidance`/`closing_guidance` (e.g. "greet with the
+    # caller's name if known, otherwise stay generic") instead of speaking
+    # `initial_message`/`call_end_text` verbatim — those two fields are kept
+    # as-is regardless, and are the fallback whenever guidance is blank or
+    # the LLM path fails. See build_greeting_directive/build_closing_directive
+    # in voicebot_nodcode_platform/bot.py.
+    dynamic_greeting: Optional[bool] = False
+    greeting_guidance: Optional[str] = ""
+    dynamic_closing: Optional[bool] = False
+    closing_guidance: Optional[str] = ""
     function_calling: Optional[bool] = False
     functions: Optional[List[Any]] = Field(default_factory=list)
     variable_mappings: Optional[List[Any]] = Field(default_factory=list)
@@ -221,6 +232,10 @@ class UpdateAssistantRequest(BaseModel):
     prompt: Optional[str] = None
     initial_message: Optional[str] = None
     call_end_text: Optional[str] = None
+    dynamic_greeting: Optional[bool] = None
+    greeting_guidance: Optional[str] = None
+    dynamic_closing: Optional[bool] = None
+    closing_guidance: Optional[str] = None
     function_calling: Optional[bool] = None
     functions: Optional[List[Any]] = None
     variable_mappings: Optional[List[Any]] = None
@@ -335,6 +350,10 @@ class AssistantResponse(BaseModel):
     prompt: str
     initial_message: str
     call_end_text: str
+    dynamic_greeting: bool = False
+    greeting_guidance: str = ""
+    dynamic_closing: bool = False
+    closing_guidance: str = ""
 
     # Bot API URLs
     mis_api_base: str
@@ -468,6 +487,10 @@ class BotConfig(BaseModel):
     system_prompt: str
     initial_message: str
     call_end_text: str
+    dynamic_greeting: bool = False
+    greeting_guidance: str = ""
+    dynamic_closing: bool = False
+    closing_guidance: str = ""
     function_calling: bool
     functions: List[Any]
     variable_mappings: List[Any] = Field(default_factory=list)

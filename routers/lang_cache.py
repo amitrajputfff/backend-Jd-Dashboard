@@ -112,7 +112,16 @@ def _build_source(bot_doc: Dict[str, Any], *, is_workflow: bool) -> Dict[str, An
         closing = bot_doc.get("inactivity_end_phrase") or "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद."
         timeout_message = ""  # no separate hard-timeout message on the workflow runtime today
     else:
-        greeting = bot_doc.get("initial_message") or "हेलो मैं सिमरन बोल रही हूँ जस्टडायल से।"
+        # dynamic_greeting bots compose their own opening line at call time
+        # (see build_greeting_directive in voicebot_nodcode_platform/bot.py)
+        # — there is no fixed initial_message text to pre-translate here, and
+        # caching one would let a stale pre-translated greeting silently win
+        # over the composed line the moment the call resolves to a non-Hindi
+        # language (bot_dev.py prefers _lang_strings["greeting"] over the raw
+        # config). Same empty-string treatment workflow bots already get.
+        greeting = "" if bot_doc.get("dynamic_greeting") else (
+            bot_doc.get("initial_message") or "हेलो मैं सिमरन बोल रही हूँ जस्टडायल से।"
+        )
         closing = bot_doc.get("inactivity_end_phrase") or (
             "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. "
             "अगर future में आपको किसी भी तरह की requirement हो, तो आप Justdial पर कभी भी call कर सकते हैं. धन्यवाद."
