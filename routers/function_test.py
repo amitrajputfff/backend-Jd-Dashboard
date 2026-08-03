@@ -41,6 +41,12 @@ class FunctionTestRequest(BaseModel):
     # merged into query_params/body the same way call-time runtime_params are,
     # so the test call can exercise a real record instead of a bare template.
     sample_params: Dict[str, Any] = Field(default_factory=dict)
+    # Optional dot path (list indices allowed, e.g. "results.data.0") — see
+    # AssistantFunction.response_path in backend/schemas.py. Applied to the
+    # response the same way the bot runtime applies it at call time, so
+    # Validate discovers fields from the unwrapped record, not the raw
+    # envelope, for a function whose response isn't already flat.
+    response_path: str = ""
 
     model_config = {"populate_by_name": True}
 
@@ -87,6 +93,28 @@ def _flatten_keys(value: Any, prefix: str = "", out: Optional[List[str]] = None)
     return out
 
 
+def _resolve_response_path(data: Any, path: str) -> Any:
+    """Verbatim port of bot.py's _resolve_response_path — duplicated rather
+    than imported because backend/ and voicebot_nodcode_platform/ are
+    separate processes/environments (see backend/outcomes.py's docstring for
+    the same reasoning). Dot-path lookup into a nested dict/list API
+    response, e.g. "results.data.0" walks data["results"]["data"][0]. List
+    segments must be plain integer indices. Returns None if any segment is
+    missing/out of range."""
+    cur = data
+    for part in path.split("."):
+        if isinstance(cur, list):
+            try:
+                cur = cur[int(part)]
+            except (ValueError, IndexError):
+                return None
+        elif isinstance(cur, dict):
+            cur = cur.get(part)
+        else:
+            return None
+    return cur
+
+
 @router.post("/api/function-validation/validate", response_model=FunctionValidationResponse)
 async def validate_function(data: FunctionTestRequest) -> FunctionValidationResponse:
     errors: List[str] = []
@@ -115,7 +143,12 @@ async def validate_function(data: FunctionTestRequest) -> FunctionValidationResp
     merged = {**data.query_params, **data.sample_params}
     merged = {k: v for k, v in merged.items() if v not in (None, "")}
     query_string = "&".join(f"{k}={v}" for k, v in merged.items())
-    full_url = f"{url}?{query_string}" if query_string else url
+    # Mirrors the same fix in bot.py's call_configured_function — a url that
+    # already has its own "?..." (e.g. pasted with a query string already in
+    # it) must get "&", not a second "?", or the merged params land inside
+    # one opaque key instead of becoming real query params.
+    sep = "&" if "?" in url else "?"
+    full_url = f"{url}{sep}{query_string}" if query_string else url
 
     status_code: Optional[int] = None
     response_json: Any = None
@@ -159,7 +192,22 @@ async def validate_function(data: FunctionTestRequest) -> FunctionValidationResp
     if status_code is not None and status_code >= 400:
         errors.append(f"Endpoint returned HTTP {status_code}.")
 
-    keys = _flatten_keys(response_json) if isinstance(response_json, (dict, list)) else []
+    # Same unwrapping the bot runtime applies at call time (bot.py's
+    # _execute_function_call) — without this, Validate discovered fields
+    # from the raw envelope (e.g. "results.data.0.buyer_details.buyer_name")
+    # instead of the unwrapped record the prompt builder actually resolves
+    # against ("buyer_details.buyer_name"), so every discovered-field chip
+    # was wrong for any function configured with a response_path.
+    response_path = (data.response_path or "").strip()
+    unwrapped = response_json
+    if response_path and isinstance(response_json, (dict, list)):
+        resolved = _resolve_response_path(response_json, response_path)
+        if resolved is not None:
+            unwrapped = resolved
+        else:
+            warnings.append(f"response_path {response_path!r} found nothing in the response.")
+
+    keys = _flatten_keys(unwrapped) if isinstance(unwrapped, (dict, list)) else []
 
     return FunctionValidationResponse(
         function_name=name,
