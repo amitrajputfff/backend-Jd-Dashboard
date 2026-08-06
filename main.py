@@ -14,11 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()  # load backend/.env before any module reads os.environ
 
 try:
-    from .routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export, audit, prompt_versions
-    from .mongo import get_assistants_col, get_users_col, get_workflow_bots_col, get_audit_logs_col
+    from .routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export, audit, prompt_versions, admin, golive, users
+    from .mongo import get_assistants_col, get_users_col, get_workflow_bots_col, get_audit_logs_col, get_protected_rules_col, get_golive_requests_col
 except ImportError:
-    from routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export, audit, prompt_versions
-    from mongo import get_assistants_col, get_users_col, get_workflow_bots_col, get_audit_logs_col
+    from routers import assistants, auth, bot_config, call_logs, analysis, phone_numbers, workflow_bots, tts_preview, function_test, mock_vendor, lang_cache, export, audit, prompt_versions, admin, golive, users
+    from mongo import get_assistants_col, get_users_col, get_workflow_bots_col, get_audit_logs_col, get_protected_rules_col, get_golive_requests_col
 
 
 @asynccontextmanager
@@ -26,14 +26,16 @@ async def lifespan(app: FastAPI):
     # Ensure indexes exist on startup
     col = get_assistants_col()
     await col.create_index("assistant_id", unique=True)
-    await col.create_index("organization_id")
-    await col.create_index([("organization_id", 1), ("is_deleted", 1)])
+    await col.create_index("created_by")
+    await col.create_index([("created_by", 1), ("is_deleted", 1)])
+    await col.create_index("is_locked")
 
     # Workflow bots indexes
     wb_col = get_workflow_bots_col()
     await wb_col.create_index("workflow_bot_id", unique=True)
-    await wb_col.create_index("organization_id")
-    await wb_col.create_index([("organization_id", 1), ("is_deleted", 1)])
+    await wb_col.create_index("created_by")
+    await wb_col.create_index([("created_by", 1), ("is_deleted", 1)])
+    await wb_col.create_index("is_locked")
 
     # Users (login accounts) indexes
     users_col = get_users_col()
@@ -45,6 +47,15 @@ async def lifespan(app: FastAPI):
     await audit_col.create_index([("timestamp", -1)])
     await audit_col.create_index([("organization_id", 1), ("timestamp", -1)])
     await audit_col.create_index("resource_id")
+
+    # RBAC: protected phone numbers + go-live request queue.
+    protected_col = get_protected_rules_col()
+    await protected_col.create_index("rule_id", unique=True)
+
+    golive_col = get_golive_requests_col()
+    await golive_col.create_index("id", unique=True)
+    await golive_col.create_index([("status", 1), ("created_at", -1)])
+    await golive_col.create_index("requested_by")
     yield
 
 
@@ -79,6 +90,9 @@ app.include_router(lang_cache.router, prefix="/backend")
 app.include_router(export.router, prefix="/backend")
 app.include_router(audit.router, prefix="/backend")
 app.include_router(prompt_versions.router, prefix="/backend")
+app.include_router(admin.router, prefix="/backend")
+app.include_router(golive.router, prefix="/backend")
+app.include_router(users.router, prefix="/backend")
 
 
 @app.get("/health")

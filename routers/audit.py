@@ -4,6 +4,12 @@
 Logs themselves are written by backend/audit_log.py's write_audit_log(),
 called from routers/assistants.py and routers/workflow_bots.py right after
 every create/update/delete/restore/clone. This router only reads them back.
+
+Admin-only (RBAC — see routers/auth.py's module docstring): this is a full
+cross-user activity trail, and the frontend already gated its page on
+system.admin (src/app/audit-logs/page.tsx's withAuditLogsGuard) — that was
+previously decorative since every user had system.admin; now it's backed by
+a real server-side check.
 """
 
 from __future__ import annotations
@@ -11,12 +17,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
 try:
     from ..mongo import get_audit_logs_col
+    from . import auth
 except ImportError:
     from mongo import get_audit_logs_col
+    from routers import auth
 
 router = APIRouter()
 
@@ -31,7 +39,7 @@ def _serialize(doc: dict) -> Dict[str, Any]:
         "id": str(doc.get("_id", "")),
         "organizationId": doc.get("organization_id", ""),
         "timestamp": ts.isoformat() if isinstance(ts, datetime) else (ts or ""),
-        "user": doc.get("user") or {"id": "unknown", "name": "Unknown", "email": "", "role": "admin"},
+        "user": doc.get("user") or {"id": "unknown", "name": "Unknown", "email": "", "role": "unknown"},
         "action": doc.get("action", ""),
         "resource": doc.get("resource", ""),
         "resourceId": doc.get("resource_id", ""),
@@ -62,6 +70,7 @@ async def list_audit_logs(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     since: Optional[str] = Query(None),
+    admin: dict = Depends(auth.require_admin),
 ) -> List[Dict[str, Any]]:
     col = get_audit_logs_col()
     query: Dict[str, Any] = {}

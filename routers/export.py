@@ -18,15 +18,17 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 try:
     from ..mongo import get_assistants_col, get_call_logs_col
+    from . import auth
     from . import phone_numbers as _phone_numbers
 except ImportError:
     from mongo import get_assistants_col, get_call_logs_col
+    from routers import auth
     from routers import phone_numbers as _phone_numbers
 
 log = logging.getLogger(__name__)
@@ -34,7 +36,10 @@ router = APIRouter()
 
 
 class ExportDataRequest(BaseModel):
-    organization_id: str
+    # Ignored for assistants export (RBAC migration — see
+    # routers/assistants.py's module docstring); kept optional for backward
+    # compat and because call_logs export still uses it.
+    organization_id: str = ""
     export_type: str  # "assistants" | "call_logs" | "phone_numbers"
     format: str = "csv"
     start_date: str
@@ -88,12 +93,15 @@ _PHONE_NUMBER_COLUMNS = [
 ]
 
 
-async def _export_assistants(organization_id: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
+async def _export_assistants(user: dict, start: datetime, end: datetime) -> List[Dict[str, Any]]:
     col = get_assistants_col()
-    query = {
-        "organization_id": organization_id,
-        "created_at": {"$gte": start, "$lte": end},
-    }
+    # Same visibility split as routers/assistants.py's list_assistants:
+    # admin exports only Live assistants, everyone else exports only their own.
+    if user.get("role") == "admin":
+        scope: Dict[str, Any] = {"is_locked": True}
+    else:
+        scope = {"is_locked": {"$ne": True}, "created_by": user.get("id")}
+    query = {**scope, "created_at": {"$gte": start, "$lte": end}}
     return await col.find(query).sort("created_at", -1).to_list(length=10000)
 
 
@@ -111,15 +119,21 @@ async def _export_call_logs(organization_id: str, start: datetime, end: datetime
     return docs
 
 
-async def _export_phone_numbers(start: datetime, end: datetime) -> List[Dict[str, Any]]:
+async def _export_phone_numbers(user: dict, start: datetime, end: datetime) -> List[Dict[str, Any]]:
     # LiveKit SIP dispatch rules aren't scoped by organization_id at all (see
     # routers/phone_numbers.py's _build_row — that field is always ""), so
     # this can only filter by date, not by org.
     rules, trunks_by_id = await _phone_numbers._fetch_all_rules_and_trunks()
     bots_by_id = await _phone_numbers._fetch_bots_map(_phone_numbers._extract_assistant_ids(rules))
+    protected_ids = await _phone_numbers._get_protected_rule_ids()
+    is_admin = user.get("role") == "admin"
     rows = []
     for rule in rules:
-        row = await _phone_numbers._build_row(rule, trunks_by_id, bots_by_id)
+        # Same rule as the dashboard list — protected numbers never leak to
+        # a non-admin, CSV export included.
+        if not is_admin and rule.sip_dispatch_rule_id in protected_ids:
+            continue
+        row = await _phone_numbers._build_row(rule, trunks_by_id, bots_by_id, protected_ids)
         created = _parse_bound(row["created_at"], "created_at") if row.get("created_at") else None
         if created and not (start <= created <= end):
             continue
@@ -128,7 +142,7 @@ async def _export_phone_numbers(start: datetime, end: datetime) -> List[Dict[str
 
 
 @router.post("/api/export/data")
-async def export_data(data: ExportDataRequest):
+async def export_data(data: ExportDataRequest, user: dict = Depends(auth.get_current_user)):
     if data.format != "csv":
         raise HTTPException(status_code=400, detail="Only CSV export is supported.")
 
@@ -136,13 +150,13 @@ async def export_data(data: ExportDataRequest):
     end = _parse_bound(data.end_date, "end_date")
 
     if data.export_type == "assistants":
-        rows = await _export_assistants(data.organization_id, start, end)
+        rows = await _export_assistants(user, start, end)
         columns = _ASSISTANT_COLUMNS
     elif data.export_type == "call_logs":
         rows = await _export_call_logs(data.organization_id, start, end)
         columns = _CALL_LOG_COLUMNS
     elif data.export_type == "phone_numbers":
-        rows = await _export_phone_numbers(start, end)
+        rows = await _export_phone_numbers(user, start, end)
         columns = _PHONE_NUMBER_COLUMNS
     else:
         raise HTTPException(status_code=400, detail=f"Unknown export_type: {data.export_type!r}")

@@ -46,8 +46,7 @@ async def write_audit_log(
                 "id": str((user or {}).get("id", "")) or "unknown",
                 "name": (user or {}).get("name") or "Unknown",
                 "email": (user or {}).get("email", ""),
-                # No real RBAC yet — see auth.py's module docstring on scope.
-                "role": "admin",
+                "role": (user or {}).get("role") or "unknown",
             },
             "action": action,
             "resource": resource,

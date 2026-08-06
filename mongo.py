@@ -98,6 +98,26 @@ def get_prompt_versions_col():
     return _get_client()["no_code_platform"]["prompt_versions"]
 
 
+# ── no_code_platform — RBAC: protected phone numbers + go-live requests ─────
+
+def get_protected_rules_col():
+    """Admin-managed set of "Live"/protected LiveKit SIP dispatch rule IDs —
+    see backend/routers/phone_numbers.py. Replaces the old
+    PROTECTED_DISPATCH_RULE_IDS env var (still used as this collection's
+    one-time migration seed — see backend/migrate_rbac.py). Doc shape:
+    {"rule_id": str, "tagged_by": int (user id), "tagged_at": str, "note": str}."""
+    return _get_client()["no_code_platform"]["protected_dispatch_rules"]
+
+
+def get_golive_requests_col():
+    """User requests to promote an owned assistant/workflow bot to Live —
+    see backend/routers/golive.py. Doc shape: {"id": int, "resource":
+    "assistants"|"workflow_bots", "resource_id": str, "requested_by": int,
+    "status": "pending"|"approved"|"rejected", "reviewed_by": int|None,
+    "created_at": str, "reviewed_at": str|None, "note": str}."""
+    return _get_client()["no_code_platform"]["golive_requests"]
+
+
 async def next_sequence(name: str) -> int:
     """Atomically increment and return the next integer for `name`."""
     doc = await get_counters_col().find_one_and_update(

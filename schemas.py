@@ -73,7 +73,11 @@ class VariableMapping(BaseModel):
 # ---------------------------------------------------------------------------
 
 class CreateAssistantRequest(BaseModel):
-    organization_id: str
+    # Ignored server-side (RBAC migration) — ownership is now `created_by`,
+    # set from the authenticated caller in routers/assistants.py, not from
+    # the request body. Kept optional here only so an old cached frontend
+    # bundle still sending this field doesn't 422.
+    organization_id: Optional[str] = None
     name: str
     description: Optional[str] = ""
     category: Optional[str] = "Customer Service"
@@ -339,7 +343,12 @@ class AssistantResponse(BaseModel):
     # Core
     id: int
     assistant_id: str
-    organization_id: str
+    # RBAC migration: organization_id is retired (always ""), created_by
+    # (the Mongo `id` of the owning user) replaces it as the ownership key.
+    # organization_id kept, defaulted, for any stale frontend bundle still
+    # reading it.
+    organization_id: str = ""
+    created_by: Optional[int] = None
     name: str
     description: str
     category: str
@@ -722,7 +731,8 @@ class Workflow(BaseModel):
 # ---------------------------------------------------------------------------
 
 class CreateWorkflowBotRequest(BaseModel):
-    organization_id: str
+    # Ignored server-side — see CreateAssistantRequest.organization_id.
+    organization_id: Optional[str] = None
     name: str
     description: Optional[str] = ""
     status: Optional[str] = "Draft"
@@ -878,7 +888,9 @@ class UpdateWorkflowBotRequest(BaseModel):
 class WorkflowBotResponse(BaseModel):
     id: int
     workflow_bot_id: str
-    organization_id: str
+    # RBAC migration — see AssistantResponse.organization_id/created_by.
+    organization_id: str = ""
+    created_by: Optional[int] = None
     name: str
     description: str
     status: str

@@ -1,11 +1,22 @@
-"""Assistants router — MongoDB-backed (no_code_platform.assistants)."""
+"""Assistants router — MongoDB-backed (no_code_platform.assistants).
+
+RBAC visibility split (see backend/routers/auth.py's module docstring for
+the overall design): an admin's Agents list shows ONLY Live (is_locked=True)
+assistants, regardless of who made them — admin accounts are for managing
+production, not authoring. A regular user's list shows only assistants they
+created (`created_by`), and NEVER Live ones — once an assistant goes Live it
+leaves the owner's list and becomes admin-only (see routers/admin.py's
+transfer-to-live and routers/golive.py's request/approve flow). This
+replaces the old model where `organization_id` was a client-supplied query
+param trusted with no ownership check at all.
+"""
 
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 
 try:
     from ..mongo import get_assistants_col, next_sequence
@@ -62,6 +73,7 @@ def _doc_to_response(doc: dict) -> AssistantResponse:
         id=doc.get("id", 0),
         assistant_id=doc["assistant_id"],
         organization_id=doc.get("organization_id", ""),
+        created_by=doc.get("created_by"),
         name=doc.get("name", ""),
         description=doc.get("description", ""),
         category=doc.get("category", "Customer Service"),
@@ -151,12 +163,30 @@ async def _get_or_404(assistant_id: str) -> dict:
     return doc
 
 
-def _new_doc(data: CreateAssistantRequest, aid: int) -> dict:
+async def _get_accessible_or_404(assistant_id: str, user: dict) -> dict:
+    """Ownership-checked lookup for endpoints reachable from a browser
+    (get/update/delete/restore/clone) — closes the hole where any assistant
+    id from any owner was readable/writable by anyone with no token at all.
+    Admins may only reach Live assistants; non-admins may only reach their
+    own, and never a Live one (Live is admin-only — see this module's
+    docstring). Returns 404, not 403, so a non-admin probing ids can't tell
+    a Live/other-owner assistant apart from one that doesn't exist."""
+    doc = await _get_or_404(assistant_id)
+    if user.get("role") == "admin":
+        if not doc.get("is_locked"):
+            raise HTTPException(status_code=404, detail=f"Assistant {assistant_id!r} not found")
+    else:
+        if doc.get("is_locked") or doc.get("created_by") != user.get("id"):
+            raise HTTPException(status_code=404, detail=f"Assistant {assistant_id!r} not found")
+    return doc
+
+
+def _new_doc(data: CreateAssistantRequest, aid: int, created_by: int) -> dict:
     now = datetime.now(timezone.utc)
     return {
         "id": aid,
         "assistant_id": str(uuid.uuid4()),
-        "organization_id": data.organization_id,
+        "created_by": created_by,
         "name": data.name,
         "description": data.description or "",
         "category": data.category or "Customer Service",
@@ -206,7 +236,10 @@ def _new_doc(data: CreateAssistantRequest, aid: int) -> dict:
         "inactivity_phrase": data.inactivity_phrase or "क्या आप अभी line पर हैं?",
         "inactivity_end_phrase": data.inactivity_end_phrase or "जी, कोई response नहीं आया, इसलिए मैं call समाप्त कर रही हूँ. धन्यवाद.",
         "lang_notes": data.lang_notes or "",
-        "is_locked": bool(getattr(data, "is_locked", False) or False),
+        # Always created non-Live — Live is granted only via
+        # routers/admin.py's transfer-to-live or an approved
+        # routers/golive.py request, never at creation time.
+        "is_locked": False,
         "tts_provider_id": data.tts_provider_id if data.tts_provider_id is not None else 3,
         "tts_model_id": data.tts_model_id if data.tts_model_id is not None else 1,
         "voice_id": data.voice_id if data.voice_id is not None else DEFAULT_VOICE_ID,
@@ -242,7 +275,6 @@ def _new_doc(data: CreateAssistantRequest, aid: int) -> dict:
 
 @router.get("/api/assistants", response_model=AssistantsListResponse)
 async def list_assistants(
-    organization_id: str = Query(...),
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=200),
     is_deleted: bool = Query(False),
@@ -251,9 +283,17 @@ async def list_assistants(
     sort_order: Optional[str] = Query("desc"),
     status: Optional[str] = Query(None),
     tags: Optional[str] = Query(None),
+    user: dict = Depends(auth.get_current_user),
 ):
     col = get_assistants_col()
-    query: dict = {"organization_id": organization_id, "is_deleted": is_deleted}
+    # Visibility split — see this module's docstring. `organization_id` is no
+    # longer accepted as a query param (it was client-supplied and trusted
+    # with zero ownership check); ownership now comes from the caller's own
+    # authenticated identity.
+    if user.get("role") == "admin":
+        query: dict = {"is_deleted": is_deleted, "is_locked": True}
+    else:
+        query = {"is_deleted": is_deleted, "is_locked": {"$ne": True}, "created_by": user.get("id")}
 
     if status:
         query["status"] = status
@@ -278,15 +318,14 @@ async def list_assistants(
 # ---------------------------------------------------------------------------
 
 @router.post("/api/assistants", response_model=AssistantResponse, status_code=201)
-async def create_assistant(data: CreateAssistantRequest, authorization: Optional[str] = Header(default=None)):
+async def create_assistant(data: CreateAssistantRequest, user: dict = Depends(auth.get_current_user)):
     col = get_assistants_col()
     aid = await next_sequence("assistant_id")
-    doc = _new_doc(data, aid)
+    doc = _new_doc(data, aid, created_by=user["id"])
     await col.insert_one(doc)
-    user = await auth.get_current_user_optional(authorization)
     await write_audit_log(
         user=user, action="agent.created", resource="assistants",
-        resource_id=doc["assistant_id"], organization_id=data.organization_id,
+        resource_id=doc["assistant_id"],
         details=f"Created agent {data.name!r}",
     )
     return _doc_to_response(doc)
@@ -297,8 +336,8 @@ async def create_assistant(data: CreateAssistantRequest, authorization: Optional
 # ---------------------------------------------------------------------------
 
 @router.post("/api/assistants/ai-create", response_model=AssistantResponse, status_code=201)
-async def ai_create_assistant(data: CreateAssistantRequest, authorization: Optional[str] = Header(default=None)):
-    return await create_assistant(data, authorization)
+async def ai_create_assistant(data: CreateAssistantRequest, user: dict = Depends(auth.get_current_user)):
+    return await create_assistant(data, user)
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +345,8 @@ async def ai_create_assistant(data: CreateAssistantRequest, authorization: Optio
 # ---------------------------------------------------------------------------
 
 @router.get("/api/assistants/{assistant_id}", response_model=AssistantResponse)
-async def get_assistant(assistant_id: str):
-    return _doc_to_response(await _get_or_404(assistant_id))
+async def get_assistant(assistant_id: str, user: dict = Depends(auth.get_current_user)):
+    return _doc_to_response(await _get_accessible_or_404(assistant_id, user))
 
 
 # ---------------------------------------------------------------------------
@@ -320,9 +359,10 @@ async def update_assistant(
     data: UpdateAssistantRequest,
     background_tasks: BackgroundTasks,
     authorization: Optional[str] = Header(default=None),
+    user: dict = Depends(auth.get_current_user),
 ):
     col = get_assistants_col()
-    doc = await _get_or_404(assistant_id)
+    doc = await _get_accessible_or_404(assistant_id, user)
     # Locked (Live) assistants require the caller's real password for ANY
     # change while they stay locked — including unlocking. A bot that isn't
     # currently locked can be freely locked (no password needed to lock it in
@@ -333,6 +373,12 @@ async def update_assistant(
     if doc.get("is_locked"):
         await auth.verify_live_bot_action(authorization, data.password)
     updates = {k: v for k, v in data.model_dump(exclude_none=True).items() if k != "password"}
+    # Only admin may flip is_locked — for non-admins it's silently dropped
+    # rather than rejected, so an otherwise-valid save doesn't 403 over one
+    # field the UI shouldn't even be sending them (see AdminOnlyGate on the
+    # frontend's "Tag as Live" control).
+    if user.get("role") != "admin":
+        updates.pop("is_locked", None)
     updates["updated_at"] = datetime.now(timezone.utc)
     await col.update_one({"assistant_id": assistant_id}, {"$set": updates})
     doc = await col.find_one({"assistant_id": assistant_id})
@@ -341,12 +387,11 @@ async def update_assistant(
     # docstring for why this has to happen here (on save) rather than at call
     # start. warm_language_cache no-ops immediately for hinglish/hindi.
     background_tasks.add_task(warm_language_cache, "assistant", assistant_id, doc)
-    user = await auth.get_current_user_optional(authorization)
     changed_fields = sorted(k for k in updates if k != "updated_at")
     background_tasks.add_task(
         write_audit_log,
         user=user, action="agent.updated", resource="assistants",
-        resource_id=assistant_id, organization_id=doc.get("organization_id", ""),
+        resource_id=assistant_id,
         details=f"Updated {', '.join(changed_fields)}" if changed_fields else "Updated agent",
         metadata={"changed_fields": changed_fields},
     )
@@ -363,9 +408,10 @@ async def delete_assistant(
     background_tasks: BackgroundTasks,
     password: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
+    user: dict = Depends(auth.get_current_user),
 ):
     col = get_assistants_col()
-    doc = await _get_or_404(assistant_id)
+    doc = await _get_accessible_or_404(assistant_id, user)
     if doc.get("is_locked"):
         await auth.verify_live_bot_action(authorization, password)
     now = datetime.now(timezone.utc)
@@ -378,11 +424,10 @@ async def delete_assistant(
             "updated_at": now,
         }},
     )
-    user = await auth.get_current_user_optional(authorization)
     background_tasks.add_task(
         write_audit_log,
         user=user, action="agent.deleted", resource="assistants",
-        resource_id=assistant_id, organization_id=doc.get("organization_id", ""),
+        resource_id=assistant_id,
         details=f"Deleted agent {doc.get('name', '')!r}", severity="medium",
     )
     return {"message": "Assistant deleted", "assistant_id": assistant_id}
@@ -396,12 +441,10 @@ async def delete_assistant(
 async def restore_assistant(
     assistant_id: str,
     background_tasks: BackgroundTasks,
-    authorization: Optional[str] = Header(default=None),
+    user: dict = Depends(auth.get_current_user),
 ):
     col = get_assistants_col()
-    doc = await col.find_one({"assistant_id": assistant_id})
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Assistant not found")
+    await _get_accessible_or_404(assistant_id, user)
     await col.update_one(
         {"assistant_id": assistant_id},
         {"$set": {
@@ -413,11 +456,10 @@ async def restore_assistant(
         }},
     )
     doc = await col.find_one({"assistant_id": assistant_id})
-    user = await auth.get_current_user_optional(authorization)
     background_tasks.add_task(
         write_audit_log,
         user=user, action="agent.activated", resource="assistants",
-        resource_id=assistant_id, organization_id=doc.get("organization_id", ""),
+        resource_id=assistant_id,
         details=f"Restored agent {doc.get('name', '')!r} from trash",
     )
     return _doc_to_response(doc)
@@ -432,10 +474,10 @@ async def clone_assistant(
     assistant_id: str,
     background_tasks: BackgroundTasks,
     body: dict = None,
-    authorization: Optional[str] = Header(default=None),
+    user: dict = Depends(auth.get_current_user),
 ):
     col = get_assistants_col()
-    original = await _get_or_404(assistant_id)
+    original = await _get_accessible_or_404(assistant_id, user)
     new_name = (body or {}).get("new_name") or (body or {}).get("name") or f"{original['name']} (Copy)"
     aid = await next_sequence("assistant_id")
     now = datetime.now(timezone.utc)
@@ -448,14 +490,21 @@ async def clone_assistant(
     clone["is_deleted"] = False
     clone["is_active"] = True
     clone["calls_today"] = 0
+    # A clone is always a fresh, editable draft: never inherit Live status
+    # (an admin cloning a Live assistant would otherwise get an undeletable,
+    # unmodifiable "Live" draft — see this router's module docstring), never
+    # inherit a stale soft-delete timestamp, and always belongs to whoever
+    # clicked Clone rather than the original owner.
+    clone["is_locked"] = False
+    clone["deleted_until"] = None
+    clone["created_by"] = user["id"]
     clone["created_at"] = now
     clone["updated_at"] = now
     await col.insert_one(clone)
-    user = await auth.get_current_user_optional(authorization)
     background_tasks.add_task(
         write_audit_log,
         user=user, action="agent.cloned", resource="assistants",
-        resource_id=clone["assistant_id"], organization_id=clone.get("organization_id", ""),
+        resource_id=clone["assistant_id"],
         details=f"Cloned {original.get('name', '')!r} as {new_name!r}",
     )
     return _doc_to_response(clone)
@@ -467,6 +516,10 @@ async def clone_assistant(
 
 @router.get("/api/assistants/{assistant_id}/bot-config", response_model=BotConfig)
 async def get_bot_config(assistant_id: str):
+    # Deliberately unauthenticated — this is called by the bot runtime
+    # (voicebot_nodcode_platform/bot_dev.py) at call start, not a browser,
+    # and it has no login of its own. Do not add an auth dependency here or
+    # every call will fail to start.
     doc = await _get_or_404(assistant_id)
     _voice = resolve_voice(doc.get("voice_id"))
     # 48kHz only ever applies to sarvam (bulbul:v3 genuinely supports it); IndicF5

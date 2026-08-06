@@ -1,13 +1,17 @@
 """Workflow Bots router — MongoDB-backed (no_code_platform.workflow_bots).
 
 Visual conversation-flow bots built in the ReactFlow canvas.
+
+RBAC visibility split — same rules as routers/assistants.py (see its module
+docstring): admins see only Live (is_locked=True) workflow bots; everyone
+else sees only their own (`created_by`), never Live ones.
 """
 
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 
 try:
     from ..mongo import get_workflow_bots_col, next_sequence
@@ -58,6 +62,7 @@ def _doc_to_response(doc: dict) -> WorkflowBotResponse:
         id=doc.get("id", 0),
         workflow_bot_id=doc["workflow_bot_id"],
         organization_id=doc.get("organization_id", ""),
+        created_by=doc.get("created_by"),
         name=doc.get("name", ""),
         description=doc.get("description", ""),
         status=doc.get("status", "Draft"),
@@ -127,12 +132,26 @@ async def _get_or_404(workflow_bot_id: str) -> dict:
     return doc
 
 
-def _new_doc(data: CreateWorkflowBotRequest, wid: int) -> dict:
+async def _get_accessible_or_404(workflow_bot_id: str, user: dict) -> dict:
+    """Ownership-checked lookup — see assistants.py's _get_accessible_or_404
+    for the full rationale (404 not 403, so probing ids can't distinguish
+    Live/other-owner from nonexistent)."""
+    doc = await _get_or_404(workflow_bot_id)
+    if user.get("role") == "admin":
+        if not doc.get("is_locked"):
+            raise HTTPException(status_code=404, detail=f"Workflow bot {workflow_bot_id!r} not found")
+    else:
+        if doc.get("is_locked") or doc.get("created_by") != user.get("id"):
+            raise HTTPException(status_code=404, detail=f"Workflow bot {workflow_bot_id!r} not found")
+    return doc
+
+
+def _new_doc(data: CreateWorkflowBotRequest, wid: int, created_by: int) -> dict:
     now = datetime.now(timezone.utc)
     return {
         "id": wid,
         "workflow_bot_id": str(uuid.uuid4()),
-        "organization_id": data.organization_id,
+        "created_by": created_by,
         "name": data.name,
         "description": data.description or "",
         "status": data.status or "Draft",
@@ -183,7 +202,8 @@ def _new_doc(data: CreateWorkflowBotRequest, wid: int) -> dict:
         "transfer_number": data.transfer_number,
         "memory_enabled": bool(data.memory_enabled),
         "max_memory_retrieval": data.max_memory_retrieval if data.max_memory_retrieval is not None else 5,
-        "is_locked": bool(data.is_locked or False),
+        # Always created non-Live — see assistants.py's _new_doc for why.
+        "is_locked": False,
         "is_deleted": False,
         "is_active": True,
         "calls_today": 0,
@@ -198,7 +218,6 @@ def _new_doc(data: CreateWorkflowBotRequest, wid: int) -> dict:
 
 @router.get("/api/workflow-bots", response_model=WorkflowBotsListResponse)
 async def list_workflow_bots(
-    organization_id: str = Query(...),
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=200),
     is_deleted: bool = Query(False),
@@ -206,9 +225,14 @@ async def list_workflow_bots(
     sort_by: Optional[str] = Query("updated_at"),
     sort_order: Optional[str] = Query("desc"),
     status: Optional[str] = Query(None),
+    user: dict = Depends(auth.get_current_user),
 ):
     col = get_workflow_bots_col()
-    query: dict = {"organization_id": organization_id, "is_deleted": is_deleted}
+    # See this module's docstring — organization_id is no longer accepted.
+    if user.get("role") == "admin":
+        query: dict = {"is_deleted": is_deleted, "is_locked": True}
+    else:
+        query = {"is_deleted": is_deleted, "is_locked": {"$ne": True}, "created_by": user.get("id")}
 
     if status:
         query["status"] = status
@@ -230,15 +254,14 @@ async def list_workflow_bots(
 # ---------------------------------------------------------------------------
 
 @router.post("/api/workflow-bots", response_model=WorkflowBotResponse, status_code=201)
-async def create_workflow_bot(data: CreateWorkflowBotRequest, authorization: Optional[str] = Header(default=None)):
+async def create_workflow_bot(data: CreateWorkflowBotRequest, user: dict = Depends(auth.get_current_user)):
     col = get_workflow_bots_col()
     wid = await next_sequence("workflow_bot_id")
-    doc = _new_doc(data, wid)
+    doc = _new_doc(data, wid, created_by=user["id"])
     await col.insert_one(doc)
-    user = await auth.get_current_user_optional(authorization)
     await write_audit_log(
         user=user, action="agent.created", resource="workflow_bots",
-        resource_id=doc["workflow_bot_id"], organization_id=data.organization_id,
+        resource_id=doc["workflow_bot_id"],
         details=f"Created workflow bot {data.name!r}",
     )
     return _doc_to_response(doc)
@@ -249,8 +272,8 @@ async def create_workflow_bot(data: CreateWorkflowBotRequest, authorization: Opt
 # ---------------------------------------------------------------------------
 
 @router.get("/api/workflow-bots/{workflow_bot_id}", response_model=WorkflowBotResponse)
-async def get_workflow_bot(workflow_bot_id: str):
-    return _doc_to_response(await _get_or_404(workflow_bot_id))
+async def get_workflow_bot(workflow_bot_id: str, user: dict = Depends(auth.get_current_user)):
+    return _doc_to_response(await _get_accessible_or_404(workflow_bot_id, user))
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +286,10 @@ async def update_workflow_bot(
     data: UpdateWorkflowBotRequest,
     background_tasks: BackgroundTasks,
     authorization: Optional[str] = Header(default=None),
+    user: dict = Depends(auth.get_current_user),
 ):
     col = get_workflow_bots_col()
-    doc = await _get_or_404(workflow_bot_id)
+    doc = await _get_accessible_or_404(workflow_bot_id, user)
     # Same lock semantics as assistants.py's update_assistant: a locked (Live)
     # workflow bot requires the caller's real password for ANY change while it
     # stays locked, including unlocking. Not currently locked -> free to edit,
@@ -273,6 +297,9 @@ async def update_workflow_bot(
     if doc.get("is_locked"):
         await auth.verify_live_bot_action(authorization, data.password)
     raw = {k: v for k, v in data.model_dump(exclude_none=True).items() if k != "password"}
+    # Only admin may flip is_locked — see assistants.py's update_assistant.
+    if user.get("role") != "admin":
+        raw.pop("is_locked", None)
     # Serialize nested Workflow object to plain dict for Mongo
     if "workflow" in raw and hasattr(data.workflow, "model_dump"):
         raw["workflow"] = data.workflow.model_dump()
@@ -282,12 +309,11 @@ async def update_workflow_bot(
     # Warm the SIP-runtime fixed-string translation cache in the background —
     # see routers/lang_cache.py. No-ops immediately for hinglish/hindi.
     background_tasks.add_task(warm_language_cache, "workflow", workflow_bot_id, doc)
-    user = await auth.get_current_user_optional(authorization)
     changed_fields = sorted(k for k in raw if k != "updated_at")
     background_tasks.add_task(
         write_audit_log,
         user=user, action="agent.updated", resource="workflow_bots",
-        resource_id=workflow_bot_id, organization_id=doc.get("organization_id", ""),
+        resource_id=workflow_bot_id,
         details=f"Updated {', '.join(changed_fields)}" if changed_fields else "Updated workflow bot",
         metadata={"changed_fields": changed_fields},
     )
@@ -304,9 +330,10 @@ async def delete_workflow_bot(
     background_tasks: BackgroundTasks,
     password: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
+    user: dict = Depends(auth.get_current_user),
 ):
     col = get_workflow_bots_col()
-    doc = await _get_or_404(workflow_bot_id)
+    doc = await _get_accessible_or_404(workflow_bot_id, user)
     if doc.get("is_locked"):
         await auth.verify_live_bot_action(authorization, password)
     now = datetime.now(timezone.utc)
@@ -319,11 +346,10 @@ async def delete_workflow_bot(
             "updated_at": now,
         }},
     )
-    user = await auth.get_current_user_optional(authorization)
     background_tasks.add_task(
         write_audit_log,
         user=user, action="agent.deleted", resource="workflow_bots",
-        resource_id=workflow_bot_id, organization_id=doc.get("organization_id", ""),
+        resource_id=workflow_bot_id,
         details=f"Deleted workflow bot {doc.get('name', '')!r}", severity="medium",
     )
     return {"message": "Workflow bot deleted", "workflow_bot_id": workflow_bot_id}
@@ -337,12 +363,10 @@ async def delete_workflow_bot(
 async def restore_workflow_bot(
     workflow_bot_id: str,
     background_tasks: BackgroundTasks,
-    authorization: Optional[str] = Header(default=None),
+    user: dict = Depends(auth.get_current_user),
 ):
     col = get_workflow_bots_col()
-    doc = await col.find_one({"workflow_bot_id": workflow_bot_id})
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Workflow bot not found")
+    await _get_accessible_or_404(workflow_bot_id, user)
     await col.update_one(
         {"workflow_bot_id": workflow_bot_id},
         {"$set": {
@@ -354,11 +378,10 @@ async def restore_workflow_bot(
         }},
     )
     doc = await col.find_one({"workflow_bot_id": workflow_bot_id})
-    user = await auth.get_current_user_optional(authorization)
     background_tasks.add_task(
         write_audit_log,
         user=user, action="agent.activated", resource="workflow_bots",
-        resource_id=workflow_bot_id, organization_id=doc.get("organization_id", ""),
+        resource_id=workflow_bot_id,
         details=f"Restored workflow bot {doc.get('name', '')!r} from trash",
     )
     return _doc_to_response(doc)
@@ -373,11 +396,11 @@ async def clone_workflow_bot(
     workflow_bot_id: str,
     background_tasks: BackgroundTasks,
     body: dict = None,
-    authorization: Optional[str] = Header(default=None),
+    user: dict = Depends(auth.get_current_user),
 ):
     col = get_workflow_bots_col()
-    original = await _get_or_404(workflow_bot_id)
-    new_name = (body or {}).get("name") or f"{original['name']} (Copy)"
+    original = await _get_accessible_or_404(workflow_bot_id, user)
+    new_name = (body or {}).get("new_name") or (body or {}).get("name") or f"{original['name']} (Copy)"
     wid = await next_sequence("workflow_bot_id")
     now = datetime.now(timezone.utc)
     clone = {**original, "_id": None}
@@ -389,15 +412,16 @@ async def clone_workflow_bot(
     clone["is_deleted"] = False
     clone["is_active"] = True
     clone["deleted_until"] = None
+    clone["is_locked"] = False
+    clone["created_by"] = user["id"]
     clone["calls_today"] = 0
     clone["created_at"] = now
     clone["updated_at"] = now
     await col.insert_one(clone)
-    user = await auth.get_current_user_optional(authorization)
     background_tasks.add_task(
         write_audit_log,
         user=user, action="agent.cloned", resource="workflow_bots",
-        resource_id=clone["workflow_bot_id"], organization_id=clone.get("organization_id", ""),
+        resource_id=clone["workflow_bot_id"],
         details=f"Cloned {original.get('name', '')!r} as {new_name!r}",
     )
     return _doc_to_response(clone)
@@ -409,6 +433,7 @@ async def clone_workflow_bot(
 
 @router.get("/api/workflow-bots/{workflow_bot_id}/bot-config", response_model=WorkflowBotConfig)
 async def get_workflow_bot_config(workflow_bot_id: str):
+    # Deliberately unauthenticated — see assistants.py's get_bot_config.
     doc = await _get_or_404(workflow_bot_id)
     voice = resolve_voice(doc.get("voice_id"))
     # See assistants.py's get_bot_config for why: 48kHz only ever applies to

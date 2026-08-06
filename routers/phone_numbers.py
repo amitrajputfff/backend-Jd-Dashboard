@@ -11,7 +11,13 @@ LiveKit is the source of truth. This router:
    that branch runs, see bot_dev.py ~line 307-322).
  - Assigns/unassigns a bot by patching room_config.metadata on the dispatch rule
    using a fetch-then-replace flow (SIPDispatchRuleUpdate has no room_config field).
- - Rejects modifications to protected rule IDs (PROTECTED_DISPATCH_RULE_IDS env var).
+ - Rejects modifications to protected rule IDs UNLESS the caller is admin
+   (RBAC — see routers/auth.py's module docstring). Protected rule IDs are
+   now admin-managed in the protected_dispatch_rules Mongo collection
+   (mongo.py's get_protected_rules_col()), not a fixed env var — the env var
+   (PROTECTED_DISPATCH_RULE_IDS) is only that collection's one-time
+   migration seed (see backend/migrate_rbac.py). Non-admins never even see a
+   protected rule in the list.
 """
 
 import json
@@ -19,12 +25,16 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 try:
-    from ..mongo import get_assistants_col, get_workflow_bots_col
+    from ..mongo import get_assistants_col, get_protected_rules_col, get_workflow_bots_col
+    from ..audit_log import write_audit_log
+    from . import auth
 except ImportError:
-    from mongo import get_assistants_col, get_workflow_bots_col
+    from mongo import get_assistants_col, get_protected_rules_col, get_workflow_bots_col
+    from audit_log import write_audit_log
+    from routers import auth
 
 from livekit.api import LiveKitAPI
 from livekit.api.sip_service import ListSIPDispatchRuleRequest, ListSIPInboundTrunkRequest
@@ -38,8 +48,11 @@ _LIVEKIT_URL = os.environ.get("LIVEKIT_URL", "")
 _LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY", "")
 _LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "")
 
-_protected_env = os.environ.get("PROTECTED_DISPATCH_RULE_IDS", "SDR_CSA2NurhzDxz")
-PROTECTED_RULE_IDS: set[str] = {r.strip() for r in _protected_env.split(",") if r.strip()}
+
+async def _get_protected_rule_ids() -> set[str]:
+    docs = await get_protected_rules_col().find({}, {"rule_id": 1}).to_list(length=None)
+    return {d["rule_id"] for d in docs}
+
 
 # The one active LiveKit worker (bot_dev.py) — per RUNNING_BOTS.md, the only
 # worker that understands Workflow Bots and per-bot Mongo dev/live overrides;
@@ -107,7 +120,7 @@ def _ts_to_iso(proto_timestamp) -> str | None:
         return None
 
 
-async def _build_row(rule, trunks_by_id: dict, bots_by_id: dict) -> dict:
+async def _build_row(rule, trunks_by_id: dict, bots_by_id: dict, protected_ids: set[str]) -> dict:
     trunk_id = rule.trunk_ids[0] if rule.trunk_ids else ""
     trunk = trunks_by_id.get(trunk_id)
     numbers: list[str] = list(trunk.numbers) if trunk else []
@@ -149,7 +162,7 @@ async def _build_row(rule, trunks_by_id: dict, bots_by_id: dict) -> dict:
         "name": rule.name,
         "agent_name": _get_agent_name(rule),
         "mapped_assistant": mapped_assistant,
-        "is_protected": rule.sip_dispatch_rule_id in PROTECTED_RULE_IDS,
+        "is_protected": rule.sip_dispatch_rule_id in protected_ids,
         "is_active": True,
         "provider_id": None,
         "type": "inbound",
@@ -215,10 +228,10 @@ def _extract_assistant_ids(rules) -> set[str]:
 
 @router.get("/api/phone-numbers")
 async def list_phone_numbers(
-    organization_id: str | None = None,
     skip: int = 0,
     limit: int = 100,
     search: str | None = None,
+    user: dict = Depends(auth.get_current_user),
 ):
     try:
         rules, trunks_by_id = await _fetch_all_rules_and_trunks()
@@ -229,10 +242,16 @@ async def list_phone_numbers(
         raise HTTPException(status_code=502, detail=f"LiveKit error: {exc}") from exc
 
     bots_by_id = await _fetch_bots_map(_extract_assistant_ids(rules))
+    protected_ids = await _get_protected_rule_ids()
+    is_admin = user.get("role") == "admin"
 
     rows = []
     for rule in rules:
-        row = await _build_row(rule, trunks_by_id, bots_by_id)
+        # Non-admins never see a protected/Live number at all — "those won't
+        # show on other accounts" (see routers/auth.py's RBAC docstring).
+        if not is_admin and rule.sip_dispatch_rule_id in protected_ids:
+            continue
+        row = await _build_row(rule, trunks_by_id, bots_by_id, protected_ids)
         if search:
             needle = search.lower()
             searchable = f"{row['phone_number']} {row['name']} {row['agent_name']}".lower()
@@ -246,7 +265,7 @@ async def list_phone_numbers(
 
 
 @router.get("/api/phone-numbers/{rule_id}")
-async def get_phone_number(rule_id: str):
+async def get_phone_number(rule_id: str, user: dict = Depends(auth.get_current_user)):
     try:
         rules, trunks_by_id = await _fetch_all_rules_and_trunks()
     except HTTPException:
@@ -258,17 +277,26 @@ async def get_phone_number(rule_id: str):
     if not rule:
         raise HTTPException(status_code=404, detail=f"Dispatch rule {rule_id!r} not found")
 
+    protected_ids = await _get_protected_rule_ids()
+    if user.get("role") != "admin" and rule_id in protected_ids:
+        # 404, not 403 — a non-admin probing rule ids shouldn't be able to
+        # tell "protected" apart from "doesn't exist".
+        raise HTTPException(status_code=404, detail=f"Dispatch rule {rule_id!r} not found")
+
     bots_by_id = await _fetch_bots_map(_extract_assistant_ids([rule]))
-    row = await _build_row(rule, trunks_by_id, bots_by_id)
+    row = await _build_row(rule, trunks_by_id, bots_by_id, protected_ids)
     return {**row, "provider": None}
 
 
 @router.post("/api/assistants/{assistant_id}/phone-numbers/{rule_id}")
-async def assign_assistant(assistant_id: str, rule_id: str):
+async def assign_assistant(assistant_id: str, rule_id: str, user: dict = Depends(auth.get_current_user)):
     """Assign a bot (Assistant OR Workflow Bot — `assistant_id` here is really
     just a bot id, kept as the URL/param name for backward compat) to a
-    dispatch rule."""
-    if rule_id in PROTECTED_RULE_IDS:
+    dispatch rule. Only an admin may touch a protected rule; only an admin
+    or the bot's own owner may assign that bot at all."""
+    is_admin = user.get("role") == "admin"
+    protected_ids = await _get_protected_rule_ids()
+    if rule_id in protected_ids and not is_admin:
         raise HTTPException(
             status_code=403,
             detail="This dispatch rule is live in production and is protected from modifications.",
@@ -276,11 +304,14 @@ async def assign_assistant(assistant_id: str, rule_id: str):
 
     assistants_col = get_assistants_col()
     workflow_bots_col = get_workflow_bots_col()
-    is_assistant = await assistants_col.find_one({"assistant_id": assistant_id}, {"_id": 1})
+    is_assistant = await assistants_col.find_one({"assistant_id": assistant_id})
     is_workflow_bot = None if is_assistant else await workflow_bots_col.find_one(
-        {"workflow_bot_id": assistant_id}, {"_id": 1}
+        {"workflow_bot_id": assistant_id}
     )
-    if not is_assistant and not is_workflow_bot:
+    bot_doc = is_assistant or is_workflow_bot
+    if not bot_doc:
+        raise HTTPException(status_code=404, detail=f"No assistant or workflow bot found for id {assistant_id!r}")
+    if not is_admin and bot_doc.get("created_by") != user.get("id"):
         raise HTTPException(status_code=404, detail=f"No assistant or workflow bot found for id {assistant_id!r}")
 
     try:
@@ -308,13 +339,14 @@ async def assign_assistant(assistant_id: str, rule_id: str):
         raise HTTPException(status_code=502, detail=f"LiveKit error: {exc}") from exc
 
     bots_by_id = await _fetch_bots_map({assistant_id})
-    row = await _build_row(updated, trunks_by_id, bots_by_id)
+    row = await _build_row(updated, trunks_by_id, bots_by_id, protected_ids)
     return {**row, "provider": None}
 
 
 @router.delete("/api/assistants/{assistant_id}/phone-numbers/{rule_id}")
-async def unassign_assistant(assistant_id: str, rule_id: str):
-    if rule_id in PROTECTED_RULE_IDS:
+async def unassign_assistant(assistant_id: str, rule_id: str, user: dict = Depends(auth.get_current_user)):
+    protected_ids = await _get_protected_rule_ids()
+    if rule_id in protected_ids and user.get("role") != "admin":
         raise HTTPException(
             status_code=403,
             detail="This dispatch rule is live in production and is protected from modifications.",
@@ -347,5 +379,41 @@ async def unassign_assistant(assistant_id: str, rule_id: str):
         log.exception("Failed to unassign assistant from rule %s", rule_id)
         raise HTTPException(status_code=502, detail=f"LiveKit error: {exc}") from exc
 
-    row = await _build_row(updated, trunks_by_id, {})
+    row = await _build_row(updated, trunks_by_id, {}, protected_ids)
     return {**row, "provider": None}
+
+
+# ── Admin: manage the protected/Live set itself ────────────────────────────
+
+@router.post("/api/phone-numbers/{rule_id}/protect")
+async def protect_phone_number(rule_id: str, body: dict = None, user: dict = Depends(auth.require_admin)):
+    """Admin-only: tag a dispatch rule as Live/protected. This is what makes
+    it invisible to non-admins and un-assignable by them — see
+    list_phone_numbers/assign_assistant/unassign_assistant above."""
+    now = datetime.now(timezone.utc).isoformat()
+    await get_protected_rules_col().update_one(
+        {"rule_id": rule_id},
+        {"$set": {
+            "rule_id": rule_id,
+            "tagged_by": user["id"],
+            "tagged_at": now,
+            "note": (body or {}).get("note", ""),
+        }},
+        upsert=True,
+    )
+    await write_audit_log(
+        user=user, action="phone_number.protected", resource="phone_numbers",
+        resource_id=rule_id, details=f"Tagged dispatch rule {rule_id!r} as Live/protected",
+    )
+    return {"rule_id": rule_id, "is_protected": True}
+
+
+@router.delete("/api/phone-numbers/{rule_id}/protect")
+async def unprotect_phone_number(rule_id: str, user: dict = Depends(auth.require_admin)):
+    """Admin-only: remove the Live/protected tag from a dispatch rule."""
+    await get_protected_rules_col().delete_one({"rule_id": rule_id})
+    await write_audit_log(
+        user=user, action="phone_number.unprotected", resource="phone_numbers",
+        resource_id=rule_id, details=f"Removed Live/protected tag from dispatch rule {rule_id!r}",
+    )
+    return {"rule_id": rule_id, "is_protected": False}
